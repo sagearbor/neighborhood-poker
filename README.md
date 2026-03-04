@@ -8,6 +8,30 @@ A Google Sheets-based tournament manager for **"Pro-Am Concurrent Flight"** poke
 
 Or view it here: [Poker Tournament Manager — Q2 2026](https://docs.google.com/spreadsheets/d/1RGW8Va04U1NLA9c2GiKcN35st5FgltS_n-2Q8E_r5Cw/edit)
 
+## Run It Yourself
+
+Recreate the sheet from scratch with the included script:
+
+```bash
+pip install google-auth google-auth-oauthlib google-api-python-client
+python3 create_sheet.py
+```
+
+By default the script looks for `arborfam-hub-token.json` (a Google service-account credentials file) in the current directory. Use `--credentials path/to/file.json` to override.
+
+The script creates a brand-new sheet with all tabs, formulas, formatting, validation, and a chart — then prints the URL.
+
+## Sheet Tabs
+
+| Tab | Description |
+|-----|-------------|
+| **Settings** | Configurable buy-in amounts, multipliers, bounty cost, rake, and payout tier thresholds |
+| **Registration** | Player sign-up with track selection (Low/High), buy-in tracking, rebuys, and top-offs. Formulas auto-calculate cash totals, main pot, side pot, and bounty contributions |
+| **Dashboard** | Live summary of player counts, prize pools, rake, and payout tables for Main Pot and Side Pot with IFS-based tier lookups. Includes chart helper columns |
+| **📺 Live Payouts** | Column chart showing tonight's prize pools for Fish (Main Pot) and Whales (Side Pot) by place |
+| **Instructions** | Step-by-step guide for running tournament night, starting a new quarter, and settings reference |
+| **⏱ Blinds Timer** | Placeholder for blind structure and timer (coming soon) |
+
 ## Tournament Night — Step by Step
 
 1. **Open the Registration tab** before players arrive.
@@ -45,3 +69,7 @@ Or view it here: [Poker Tournament Manager — Q2 2026](https://docs.google.com/
 Everyone starts with the same chip stack. Low track players buy in for $40; High track "whales" buy in for $160 (4× the base). The extra $120 per whale goes into a separate **Side Pot** that only whales compete for. The base $40 from every player goes into the **Main Pot** that everyone competes for.
 
 Fair for casuals. Exciting for sharks. One table.
+
+## Source
+
+https://github.com/sagearbor/neighborhood-poker
