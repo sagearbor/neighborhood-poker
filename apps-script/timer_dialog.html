@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', Arial, sans-serif;
+    background: #1a1a2e;
+    color: #fff;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    transition: background-color 0.15s, color 0.15s;
+    overflow: hidden;
+  }
+  #level-label {
+    font-size: 28px;
+    font-weight: 600;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+    color: #aaa;
+  }
+  #blinds {
+    font-size: 72px;
+    font-weight: 700;
+    margin-bottom: 16px;
+  }
+  #timer {
+    font-size: 120px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 4px;
+    margin-bottom: 24px;
+  }
+  #next-info {
+    font-size: 20px;
+    color: #888;
+    margin-bottom: 32px;
+  }
+  .btn-row {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  button {
+    font-size: 18px;
+    font-weight: 600;
+    padding: 12px 28px;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: opacity 0.2s;
+  }
+  button:hover { opacity: 0.85; }
+  #btn-pause {
+    background: #3a86ff;
+    color: #fff;
+  }
+  #btn-next {
+    background: #2ecc71;
+    color: #fff;
+  }
+  #btn-snooze {
+    background: #f39c12;
+    color: #fff;
+    display: none;
+  }
+  .break-banner {
+    color: #f39c12 !important;
+  }
+</style>
+</head>
+<body>
+
+<div id="level-label">Level 1</div>
+<div id="blinds">25 / 50</div>
+<div id="timer">20:00</div>
+<div id="next-info">Next: 50 / 100</div>
+<div class="btn-row">
+  <button id="btn-pause" onclick="onPause()">Pause</button>
+  <button id="btn-next" onclick="onNext()">Next Level</button>
+  <button id="btn-snooze" onclick="onSnooze()">Snooze 2min</button>
+</div>
+
+<script>
+var schedule = [];
+var levelIndex = 0;
+var remaining = 0;   // seconds
+var paused = false;
+var flashing = false;
+var flashInterval = null;
+var tickInterval = null;
+
+// ─── Init ──────────────────────────────────────────────────────────────
+
+google.script.run
+  .withSuccessHandler(function(data) {
+    schedule = data || [];
+    google.script.run
+      .withSuccessHandler(function(state) {
+        levelIndex = state.levelIndex || 0;
+        paused = state.paused;
+        if (state.remainingSeconds !== null) {
+          remaining = state.remainingSeconds;
+        } else {
+          remaining = (schedule[levelIndex] ? schedule[levelIndex].duration : 0) * 60;
+        }
+        render();
+        startTick();
+      })
+      .getTimerState();
+  })
+  .getBlindSchedule();
+
+// ─── Tick loop ─────────────────────────────────────────────────────────
+
+function startTick() {
+  if (tickInterval) clearInterval(tickInterval);
+  tickInterval = setInterval(tick, 1000);
+}
+
+function tick() {
+  if (paused || flashing) return;
+  if (remaining > 0) {
+    remaining--;
+    google.script.run.saveRemainingSeconds(remaining);
+    renderTime();
+    if (remaining <= 0) {
+      startFlashing();
+    }
+  }
+}
+
+// ─── Render ────────────────────────────────────────────────────────────
+
+function render() {
+  if (levelIndex >= schedule.length) {
+    document.getElementById('level-label').textContent = 'TOURNAMENT COMPLETE';
+    document.getElementById('blinds').textContent = '';
+    document.getElementById('timer').textContent = '--:--';
+    document.getElementById('next-info').textContent = '';
+    return;
+  }
+  var cur = schedule[levelIndex];
+  var label = document.getElementById('level-label');
+  var blinds = document.getElementById('blinds');
+
+  if (cur.isBreak) {
+    label.textContent = 'BREAK';
+    label.className = 'break-banner';
+    blinds.textContent = cur.level;
+    blinds.className = 'break-banner';
+  } else {
+    label.textContent = cur.level;
+    label.className = '';
+    blinds.textContent = formatNum(cur.smallBlind) + ' / ' + formatNum(cur.bigBlind);
+    blinds.className = '';
+  }
+
+  // Next level preview
+  var nextIdx = levelIndex + 1;
+  var nextInfo = document.getElementById('next-info');
+  if (nextIdx < schedule.length) {
+    var nxt = schedule[nextIdx];
+    if (nxt.isBreak) {
+      nextInfo.textContent = 'Next: BREAK (' + nxt.duration + ' min)';
+    } else {
+      nextInfo.textContent = 'Next: ' + formatNum(nxt.smallBlind) + ' / ' + formatNum(nxt.bigBlind);
+    }
+  } else {
+    nextInfo.textContent = 'Final level';
+  }
+
+  renderTime();
+  document.getElementById('btn-pause').textContent = paused ? 'Resume' : 'Pause';
+}
+
+function renderTime() {
+  var m = Math.floor(remaining / 60);
+  var s = remaining % 60;
+  document.getElementById('timer').textContent =
+    String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+}
+
+function formatNum(n) {
+  return Number(n).toLocaleString();
+}
+
+// ─── Flashing ──────────────────────────────────────────────────────────
+
+function startFlashing() {
+  flashing = true;
+  document.getElementById('btn-snooze').style.display = 'inline-block';
+  var dark = false;
+  flashInterval = setInterval(function() {
+    document.body.style.backgroundColor = dark ? '#000000' : '#ffffff';
+    document.body.style.color = dark ? '#ffffff' : '#000000';
+    dark = !dark;
+  }, 400);
+}
+
+function stopFlashing() {
+  flashing = false;
+  if (flashInterval) { clearInterval(flashInterval); flashInterval = null; }
+  document.body.style.backgroundColor = '#1a1a2e';
+  document.body.style.color = '#fff';
+  document.getElementById('btn-snooze').style.display = 'none';
+}
+
+// ─── Button handlers ───────────────────────────────────────────────────
+
+function onPause() {
+  paused = !paused;
+  document.getElementById('btn-pause').textContent = paused ? 'Resume' : 'Pause';
+  google.script.run.pauseResume();
+}
+
+function onNext() {
+  stopFlashing();
+  levelIndex++;
+  if (levelIndex < schedule.length) {
+    remaining = schedule[levelIndex].duration * 60;
+  }
+  google.script.run.advanceLevel();
+  google.script.run.saveRemainingSeconds(remaining);
+  paused = false;
+  render();
+}
+
+function onSnooze() {
+  stopFlashing();
+  remaining += 120;
+  google.script.run.snoozeTimer();
+  paused = false;
+  render();
+}
+</script>
+</body>
+</html>
