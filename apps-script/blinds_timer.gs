@@ -41,7 +41,7 @@ function getBlindSchedule() {
   var lastRow = sheet.getLastRow();
   if (lastRow < DATA_START_ROW) return [];
 
-  var data = sheet.getRange(DATA_START_ROW, 1, lastRow - DATA_START_ROW + 1, 4).getValues();
+  var data = sheet.getRange(DATA_START_ROW, 1, lastRow - DATA_START_ROW + 1, 5).getValues();
   var levels = [];
 
   for (var i = 0; i < data.length; i++) {
