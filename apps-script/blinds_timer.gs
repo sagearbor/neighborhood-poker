@@ -54,7 +54,7 @@ function getBlindSchedule() {
       label: levelLabel,
       sb: isBreak ? 0 : (Number(row[1]) || 0),
       bb: isBreak ? 0 : (Number(row[2]) || 0),
-      duration: Number(row[3]) || 20,
+      duration: Number(row[4]) || 20,
       isBreak: isBreak
     });
   }
