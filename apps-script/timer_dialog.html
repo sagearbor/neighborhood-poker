@@ -105,6 +105,12 @@
 </head>
 <body>
 
+<div style="display:flex; align-items:center; gap:8px; margin-bottom:6px; opacity:0.6; font-size:0.85em;">
+  🕐 Start time: <input id="start-time" type="time" value="18:00"
+    style="background:transparent; border:none; border-bottom:1px solid rgba(255,255,255,0.3); color:inherit; font-size:1em; width:80px;"
+    onchange="updateStartTime()">
+  <span id="end-time-display"></span>
+</div>
 <div id="level-label">Level 1</div>
 <div id="blinds">— / —</div>
 <div id="timer">20:00</div>
@@ -114,8 +120,18 @@
 
 <div class="btn-row">
   <button id="btn-pause"  onclick="togglePause()">⏸ Pause</button>
-  <button id="btn-snooze" onclick="snooze()">+2 min</button>
   <button id="btn-next"   onclick="nextLevel()">Next Level ⏭</button>
+</div>
+
+<div id="edit-time-row" style="display:none; margin-top:16px; align-items:center; gap:10px; flex-direction:column;">
+  <div style="opacity:0.7; font-size:0.9em;">⏸ PAUSED — edit time if needed</div>
+  <div style="display:flex; gap:10px; align-items:center;">
+    <input id="time-edit" type="text" placeholder="MM:SS or minutes"
+      style="width:120px; font-size:1.4em; text-align:center; padding:8px; border-radius:6px; border:none; background:#1e2a3a; color:#fff; font-family:monospace;"
+      onkeydown="if(event.key==='Enter') applyTimeEdit()">
+    <button onclick="applyTimeEdit()" style="padding:10px 20px; font-size:1em; background:#3a8ef6; color:#fff; border:none; border-radius:6px; font-weight:bold; cursor:pointer;">Set</button>
+  </div>
+  <div style="opacity:0.5; font-size:0.8em;">e.g. "5" for 5 min, "7:30" for 7m 30s</div>
 </div>
 
 <script>
@@ -145,7 +161,7 @@ function loadLevel(idx) {
   stopFlash();
   alerting = false;
   document.getElementById('alert-message').textContent = '';
-  document.getElementById('btn-snooze').style.display = 'none';
+  
   document.body.className = '';
 
   currentIndex = idx;
@@ -216,7 +232,7 @@ function startTick() {
 function triggerAlert() {
   alerting = true;
   document.getElementById('alert-message').textContent = '⏰ TIME! Move to next level';
-  document.getElementById('btn-snooze').style.display = 'inline-block';
+  togglePause(); // auto-pause on alert
   startFlash();
   try { beep(); } catch(e) {}
 }
@@ -258,6 +274,7 @@ function beep() {
 function togglePause() {
   paused = !paused;
   document.getElementById('btn-pause').textContent = paused ? '▶ Resume' : '⏸ Pause';
+  document.getElementById('edit-time-row').style.display = paused ? 'flex' : 'none';
 }
 
 function nextLevel() {
@@ -280,13 +297,63 @@ function snooze() {
   remainingSeconds = 120;
   totalSeconds = 120;
   document.getElementById('alert-message').textContent = '';
-  document.getElementById('btn-snooze').style.display = 'none';
+  
   updateTimerDisplay();
   updateProgress();
 }
 
+// ── Edit timer when paused ───────────────────────────────────────────────────
+function applyTimeEdit() {
+  var val = document.getElementById('time-edit').value.trim();
+  var secs = 0;
+  if (val.indexOf(':') !== -1) {
+    var parts = val.split(':');
+    secs = parseInt(parts[0]) * 60 + parseInt(parts[1]);
+  } else {
+    secs = parseInt(val) * 60;
+  }
+  if (!isNaN(secs) && secs > 0) {
+    remainingSeconds = secs;
+    totalSeconds = secs;
+    updateTimerDisplay();
+    updateProgress();
+    document.getElementById('time-edit').value = '';
+  }
+}
+
+// ── Start time + predicted end ────────────────────────────────────────────────
+var startMinutes = 18 * 60; // default 6:00 PM
+
+function updateStartTime() {
+  var val = document.getElementById('start-time').value;
+  var parts = val.split(':');
+  startMinutes = parseInt(parts[0]) * 60 + parseInt(parts[1]);
+  updateEndTimeDisplay();
+}
+
+function updateEndTimeDisplay() {
+  var elapsed = 0;
+  for (var i = 0; i <= currentIndex; i++) {
+    elapsed += LEVELS[i].duration;
+  }
+  var remaining = Math.ceil(remainingSeconds / 60);
+  var totalElapsed = elapsed - LEVELS[currentIndex].duration + (LEVELS[currentIndex].duration - remaining);
+  
+  // Calculate when tournament is scheduled to end
+  var totalMins = 0;
+  for (var i = 0; i < LEVELS.length; i++) totalMins += LEVELS[i].duration;
+  var endMin = startMinutes + totalMins;
+  var endH = Math.floor(endMin / 60) % 24;
+  var endM = endMin % 60;
+  var ampm = endH >= 12 ? 'PM' : 'AM';
+  var h12 = endH > 12 ? endH - 12 : (endH === 0 ? 12 : endH);
+  document.getElementById('end-time-display').textContent =
+    'Est. end: ' + h12 + ':' + String(endM).padStart(2,'0') + ' ' + ampm;
+}
+
 // ── Start ─────────────────────────────────────────────────────────────────────
 init();
+updateEndTimeDisplay();
 </script>
 </body>
 </html>
