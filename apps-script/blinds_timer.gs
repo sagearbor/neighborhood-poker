@@ -30,9 +30,8 @@ function onOpen() {
 }
 
 function initializeTimer() {
-  onOpen();
   resetTimer();
-  SpreadsheetApp.getActive().toast('Poker Timer initialized! Use the menu to start.');
+  SpreadsheetApp.getActive().toast('Done! Reload the spreadsheet tab — the 🃏 Poker Timer menu will appear.');
 }
 
 // ─── Timer actions ───────────────────────────────────────────────────────────
