@@ -50,13 +50,11 @@ function getBlindSchedule() {
     if (!levelLabel) continue;
 
     var isBreak = levelLabel.toUpperCase().indexOf('BREAK') !== -1;
-    var duration = parseInt(row[3]) || 20;
-
     levels.push({
       label: levelLabel,
-      small: isBreak ? 0 : (parseInt(row[1]) || 0),
-      big:   isBreak ? 0 : (parseInt(row[2]) || 0),
-      duration: duration,
+      sb: isBreak ? 0 : (Number(row[1]) || 0),
+      bb: isBreak ? 0 : (Number(row[2]) || 0),
+      duration: Number(row[3]) || 20,
       isBreak: isBreak
     });
   }

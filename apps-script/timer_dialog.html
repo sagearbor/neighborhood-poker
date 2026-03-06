@@ -162,7 +162,7 @@ function loadLevel(idx) {
   if (lvl.isBreak) {
     document.getElementById('blinds').textContent = lvl.label || 'BREAK';
   } else {
-    document.getElementById('blinds').textContent = lvl.small + ' / ' + lvl.big;
+    document.getElementById('blinds').textContent = lvl.sb + ' / ' + lvl.bb;
   }
 
   updateTimerDisplay();
@@ -192,7 +192,7 @@ function updateNextInfo() {
     document.getElementById('next-info').textContent = 'Next: BREAK (' + next.duration + ' min)';
   } else {
     document.getElementById('next-info').textContent =
-      'Next: ' + next.small + ' / ' + next.big;
+      'Next: ' + next.sb + ' / ' + next.bb;
   }
 }
 
