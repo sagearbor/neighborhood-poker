@@ -52,8 +52,8 @@ function getBlindSchedule() {
     var isBreak = levelLabel.toUpperCase().indexOf('BREAK') !== -1;
     levels.push({
       label: levelLabel,
-      sb: isBreak ? 0 : (Number(row[1]) || 0),
-      bb: isBreak ? 0 : (Number(row[2]) || 0),
+      smallBlind: isBreak ? 0 : (Number(row[1]) || 0),
+      bigBlind: isBreak ? 0 : (Number(row[2]) || 0),
       duration: Number(row[4]) || 20,
       isBreak: isBreak
     });
