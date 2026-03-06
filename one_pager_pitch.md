@@ -5,9 +5,9 @@
 You've got two kinds of players at the neighborhood game:
 
 - **The casuals** — They want a fun night out. $40 feels right. $180 feels like rent money.
-- **The sharks** — They want real stakes. $40 is a yawn. They'd play for $200 if they could.
+- **The whales** — They want real stakes. $40 is a yawn. They'd play for $200 if they could.
 
-Run a $40 tournament and the sharks stop showing up. Run a $180 tournament and the casuals bail. You can't build a regular game if half the table rotates every week.
+Run a $40 tournament and the whales stop showing up. Run a $180 tournament and the casuals bail. You can't build a regular game if half the table rotates every week.
 
 ## The Solution: Pro-Am Concurrent Flight
 
@@ -43,7 +43,7 @@ The whale gets the action they want. The casual gets a fair game at a comfortabl
 - **Equal chips** — No one starts with an advantage at the table.
 - **Equal main pot access** — Every dollar of the base buy-in goes into the main pot. A Low player who outplays the field wins the same main pot share as anyone else.
 - **Side pot is opt-in** — Whales aren't subsidized. They're paying extra for a separate competition among themselves.
-- **No resentment** — Casuals aren't priced out. Sharks aren't bored. Everyone has skin in the game at their comfort level.
+- **No resentment** — Casuals aren't priced out. Whales aren't bored. Everyone has skin in the game at their comfort level.
 
 ## Run It
 
