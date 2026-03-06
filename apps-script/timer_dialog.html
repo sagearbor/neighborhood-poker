@@ -120,7 +120,7 @@
 
 <script>
 // ── Data injected from Apps Script ──────────────────────────────────────────
-var LEVELS = <?= levelsJson ?>;
+var LEVELS = <?!= levelsJson ?>;
 
 // ── State ────────────────────────────────────────────────────────────────────
 var currentIndex = 0;
@@ -150,7 +150,8 @@ function loadLevel(idx) {
 
   currentIndex = idx;
   var lvl = LEVELS[idx];
-  totalSeconds = lvl.duration * 60;
+  var dur = (lvl.duration && lvl.duration > 0) ? lvl.duration : 20;
+  totalSeconds = dur * 60;
   remainingSeconds = totalSeconds;
 
   // Label
