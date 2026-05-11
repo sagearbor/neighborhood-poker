@@ -160,24 +160,24 @@ def build_settings_data():
     # Row 1
     rows.append(["⚙️ SETTINGS"])
 
-    # Row 2: pot table header. Col D is a helper "active filter" — populated
-    # only when Buy-in is set, so the Registration dropdown skips inactive rows.
-    rows.append(["Pot Name", "Buy-in ($)", "Note", "✓ Active"])
+    # Row 2: pot table header (3 visible cols). The "active filter" helper
+    # lives off to the right in col I (written separately) so col D stays
+    # blank for these rows and the Note in C can overflow naturally.
+    rows.append(["Pot Name", "Buy-in ($)", "Note"])
 
-    # Rows 3-8: 6 pot rows. 4 default-active + 2 stocked-but-inactive.
-    # User can blank Buy-in to deactivate, or fill Buy-in to activate.
+    # Rows 3-8: 6 pot rows in monetary order with two optional in-between tiers.
+    # Active tiers (Buy-in set) flow through; the Crab/Dolphin rows are pre-
+    # filled name+note but Buy-in blank, so they're inert until activated.
     default_pots = [
         ("🦐 Shrimp", 1, "Casual / learning"),
+        ("🦀 Crab", "", "Optional — fill Buy-in to activate (~$5 suggested)"),
         ("🐟 Fish", 10, "Low-stakes fun"),
         ("🐠 Tuna", 40, "Mid-stakes"),
-        ("🐋 Whale", 140, "High-stakes"),
-        ("🦀 Crab", "", "Optional — fill Buy-in to activate (~$5 suggested)"),
         ("🐬 Dolphin", "", "Optional — fill Buy-in to activate (~$75 suggested)"),
+        ("🐋 Whale", 140, "High-stakes"),
     ]
-    for i, (name, buyin, note) in enumerate(default_pots):
-        sheet_row = POT_FIRST_ROW + i  # 3..8
-        active_formula = f'=IF(B{sheet_row}>0,A{sheet_row},"")'
-        rows.append([name, buyin, note, active_formula])
+    for name, buyin, note in default_pots:
+        rows.append([name, buyin, note])
 
     # Row 9: blank
     rows.append([])
@@ -324,7 +324,7 @@ def build_dashboard_data():
         settings_row = POT_FIRST_ROW + offset  # 3..8
         dash_row = DASH_TIER_FIRST_ROW + offset  # 11..16
 
-        active_cell = f"Settings!$D${settings_row}"  # helper: name if active, else ""
+        active_cell = f"Settings!$I${settings_row}"  # helper: name if active, else ""
 
         name_formula = f"={active_cell}"
         count_formula = (
@@ -473,6 +473,27 @@ def make_format_requests():
         }
     })
 
+    # Settings column widths: roomy Note column + hide the helper at col I.
+    for col_idx, width in [(0, 160), (1, 110), (2, 320)]:  # A, B, C
+        requests.append({
+            "updateDimensionProperties": {
+                "range": {"sheetId": SID_SETTINGS, "dimension": "COLUMNS",
+                          "startIndex": col_idx, "endIndex": col_idx + 1},
+                "properties": {"pixelSize": width},
+                "fields": "pixelSize",
+            }
+        })
+
+    # Hide col I (the active-filter helper).
+    requests.append({
+        "updateDimensionProperties": {
+            "range": {"sheetId": SID_SETTINGS, "dimension": "COLUMNS",
+                      "startIndex": 8, "endIndex": 9},
+            "properties": {"hiddenByUser": True},
+            "fields": "hiddenByUser",
+        }
+    })
+
     # Pot table header bold (row 2 / index 1)
     requests.append({
         "repeatCell": {
@@ -553,8 +574,8 @@ def make_format_requests():
         }
     })
 
-    # Pot dropdown sourced from Settings col D (helper "active" column).
-    # Tiers with blank Buy-in show "" in col D and are skipped from the dropdown.
+    # Pot dropdown sourced from Settings col I (hidden helper "active" column).
+    # Tiers with blank Buy-in show "" there and are skipped from the dropdown.
     requests.append({
         "setDataValidation": {
             "range": {"sheetId": SID_REGISTRATION,
@@ -565,7 +586,7 @@ def make_format_requests():
                     "type": "ONE_OF_RANGE",
                     "values": [{
                         "userEnteredValue":
-                            f"=Settings!$D${POT_FIRST_ROW}:$D${POT_LAST_ROW}"
+                            f"=Settings!$I${POT_FIRST_ROW}:$I${POT_LAST_ROW}"
                     }],
                 },
                 "showCustomUi": True,
@@ -953,6 +974,17 @@ def populate_data(sheets_service, spreadsheet_id):
     data.append({
         "range": f"Settings!A1:{col_letter(7)}{len(settings_rows)}",
         "values": settings_rows,
+    })
+
+    # Helper "active filter" formulas in col I rows 3-8 (hidden column).
+    # =IF(B>0, A, "") — name flows through only when Buy-in is set.
+    helper_formulas = [
+        [f'=IF(B{POT_FIRST_ROW + i}>0,A{POT_FIRST_ROW + i},"")']
+        for i in range(POT_COUNT)
+    ]
+    data.append({
+        "range": f"Settings!I{POT_FIRST_ROW}:I{POT_LAST_ROW}",
+        "values": helper_formulas,
     })
 
     reg_headers = build_registration_headers()
