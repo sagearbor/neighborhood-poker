@@ -160,24 +160,24 @@ def build_settings_data():
     # Row 1
     rows.append(["⚙️ SETTINGS"])
 
-    # Row 2: pot table header. Col D is a helper "active filter" — populated
-    # only when Buy-in is set, so the Registration dropdown skips inactive rows.
-    rows.append(["Pot Name", "Buy-in ($)", "Note", "✓ Active"])
+    # Row 2: pot table header (3 visible cols). The "active filter" helper
+    # lives off to the right in col I (written separately) so col D stays
+    # blank for these rows and the Note in C can overflow naturally.
+    rows.append(["Pot Name", "Buy-in ($)", "Note"])
 
-    # Rows 3-8: 6 pot rows. 4 default-active + 2 stocked-but-inactive.
-    # User can blank Buy-in to deactivate, or fill Buy-in to activate.
+    # Rows 3-8: 6 pot rows in monetary order with two optional in-between tiers.
+    # Active tiers (Buy-in set) flow through; the Crab/Dolphin rows are pre-
+    # filled name+note but Buy-in blank, so they're inert until activated.
     default_pots = [
         ("🦐 Shrimp", 1, "Casual / learning"),
+        ("🦀 Crab", "", "Optional — fill Buy-in to activate (~$5 suggested)"),
         ("🐟 Fish", 10, "Low-stakes fun"),
         ("🐠 Tuna", 40, "Mid-stakes"),
-        ("🐋 Whale", 140, "High-stakes"),
-        ("🦀 Crab", "", "Optional — fill Buy-in to activate (~$5 suggested)"),
         ("🐬 Dolphin", "", "Optional — fill Buy-in to activate (~$75 suggested)"),
+        ("🐋 Whale", 140, "High-stakes"),
     ]
-    for i, (name, buyin, note) in enumerate(default_pots):
-        sheet_row = POT_FIRST_ROW + i  # 3..8
-        active_formula = f'=IF(B{sheet_row}>0,A{sheet_row},"")'
-        rows.append([name, buyin, note, active_formula])
+    for name, buyin, note in default_pots:
+        rows.append([name, buyin, note])
 
     # Row 9: blank
     rows.append([])
@@ -231,50 +231,71 @@ def build_settings_data():
 # ---------------------------------------------------------------------------
 
 def build_registration_headers():
-    return [["Player Name", "Pot", "Buy-in Paid?", "Rebuy Count",
+    """Registration layout (1-indexed cols):
+      A: Player Name (input)
+      B: Pot (dropdown)
+      C: Owed ($) (formula — what cashier should collect right now)
+      D: Buy-in Paid? (checkbox)
+      E: Rebuy Count (number 0-2)
+      F: Top-Off? (checkbox)
+      G: Total Cash (formula — actually collected, gated on Paid)
+      H: Pot Contribution (formula — buy-in portion only)
+      I: Bounty (formula — bounty portion)
+    """
+    return [["Player Name", "Pot", "Owed ($)", "Buy-in Paid?", "Rebuy Count",
              "Top-Off?", "Total Cash", "Pot Contribution", "Bounty"]]
 
 
 def reg_formulas(r: int) -> list:
-    """Formulas for columns F-H at 1-based row r.
-
-    Each player's pot is looked up by tier name from Settings!A3:B8.
-    """
+    """Return formulas for [C (Owed), G (Total Cash), H (Pot Contribution),
+    I (Bounty)] at 1-based row r."""
     pot_lookup = (
         f"VLOOKUP(B{r},Settings!$A${POT_FIRST_ROW}:$B${POT_LAST_ROW},2,FALSE)"
     )
     bounty = "Settings!$B$10"
     topoff_mult = "Settings!$B$11"
 
-    # F: Total Cash — entry (incl bounty) + rebuys (incl bounty) + topoff (no bounty)
-    f_total = (
+    # C: Owed — expected total at this moment regardless of Paid status.
+    # Shows what the cashier should be collecting (initial buy-in + bounty,
+    # plus any rebuys, plus top-off if checked). 0 until a Pot is picked.
+    c_owed = (
         f"=IFERROR("
-        f"IF(C{r},{pot_lookup}+{bounty},0)"
-        f"+D{r}*({pot_lookup}+{bounty})"
-        f"+IF(E{r},{pot_lookup}*{topoff_mult},0)"
+        f"({pot_lookup}+{bounty})"
+        f"+E{r}*({pot_lookup}+{bounty})"
+        f"+IF(F{r},{pot_lookup}*{topoff_mult},0)"
         f",0)"
     )
 
-    # G: Pot Contribution — buy-in portion only (no bounty)
-    g_pot = (
+    # G: Total Cash — actually-collected (buy-in only counts when Paid is checked)
+    g_total = (
         f"=IFERROR("
-        f"IF(C{r},{pot_lookup},0)"
-        f"+D{r}*{pot_lookup}"
-        f"+IF(E{r},{pot_lookup}*{topoff_mult},0)"
+        f"IF(D{r},{pot_lookup}+{bounty},0)"
+        f"+E{r}*({pot_lookup}+{bounty})"
+        f"+IF(F{r},{pot_lookup}*{topoff_mult},0)"
         f",0)"
     )
 
-    # H: Bounty — independent of pot
-    h_bounty = f"=IF(C{r},{bounty},0)+D{r}*{bounty}"
+    # H: Pot Contribution — buy-in portion only (no bounty), gated on Paid
+    h_pot = (
+        f"=IFERROR("
+        f"IF(D{r},{pot_lookup},0)"
+        f"+E{r}*{pot_lookup}"
+        f"+IF(F{r},{pot_lookup}*{topoff_mult},0)"
+        f",0)"
+    )
 
-    return [f_total, g_pot, h_bounty]
+    # I: Bounty — independent of pot
+    i_bounty = f"=IF(D{r},{bounty},0)+E{r}*{bounty}"
+
+    return [c_owed, g_total, h_pot, i_bounty]
 
 
 def build_registration_formulas():
     rows = []
     for r in range(FIRST_PLAYER_ROW, LAST_PLAYER_ROW + 1):
-        formulas = reg_formulas(r)
-        rows.append(["", "", False, 0, False] + formulas)
+        c_owed, g_total, h_pot, i_bounty = reg_formulas(r)
+        # A, B, C, D, E, F, G, H, I
+        rows.append(["", "", c_owed, False, 0, False, g_total, h_pot, i_bounty])
     return rows
 
 
@@ -303,12 +324,12 @@ def build_dashboard_data():
     rows.append([])
 
     rows.append(["Total Players", f"=COUNTA(Registration!B2:B{lr})"])
-    rows.append(["Total Cash in Box", f"=SUM(Registration!F2:F{lr})"])
-    rows.append(["Bounty Pool", f"=SUM(Registration!H2:H{lr})"])
+    rows.append(["Total Cash in Box", f"=SUM(Registration!G2:G{lr})"])
+    rows.append(["Bounty Pool", f"=SUM(Registration!I2:I{lr})"])
     rows.append(["Rake Amount",
-                 f"=SUM(Registration!G2:G{lr})*Settings!$B$13/100"])
+                 f"=SUM(Registration!H2:H{lr})*Settings!$B$13/100"])
     rows.append(["Net Prize Pool",
-                 f"=SUM(Registration!G2:G{lr})*(1-Settings!$B$13/100)"])
+                 f"=SUM(Registration!H2:H{lr})*(1-Settings!$B$13/100)"])
 
     rows.append([])
     rows.append(["PER-POT BREAKDOWN"])
@@ -324,7 +345,7 @@ def build_dashboard_data():
         settings_row = POT_FIRST_ROW + offset  # 3..8
         dash_row = DASH_TIER_FIRST_ROW + offset  # 11..16
 
-        active_cell = f"Settings!$D${settings_row}"  # helper: name if active, else ""
+        active_cell = f"Settings!$I${settings_row}"  # helper: name if active, else ""
 
         name_formula = f"={active_cell}"
         count_formula = (
@@ -334,10 +355,11 @@ def build_dashboard_data():
         total_formula = (
             f"=IF({active_cell}=\"\",\"\","
             f"SUMIF(Registration!$B$2:$B${lr},{active_cell},"
-            f"Registration!$G$2:$G${lr})*(1-Settings!$B$13/100))"
+            f"Registration!$H$2:$H${lr})*(1-Settings!$B$13/100))"
         )
 
-        # Place columns D-H (1st-5th)
+        # Place columns D-H (1st-5th). Round down to whole dollars (not $5)
+        # so small pots like 2× Shrimp ($2 total) don't disappear into FLOOR(2,5)=0.
         place_formulas = []
         for place_idx in range(5):
             pct_col = col_letter(3 + place_idx)  # D, E, F, G, H
@@ -346,7 +368,7 @@ def build_dashboard_data():
             ifs = _tier_lookup_ifs(count_cell, pct_col)
             place_formulas.append(
                 f"=IFERROR(IF({count_cell}<=0,\"\","
-                f"FLOOR({total_cell}*({ifs})/100,5)),\"\")"
+                f"FLOOR({total_cell}*({ifs})/100,1)),\"\")"
             )
 
         rows.append([name_formula, count_formula, total_formula] + place_formulas)
@@ -473,6 +495,27 @@ def make_format_requests():
         }
     })
 
+    # Settings column widths: roomy Note column + hide the helper at col I.
+    for col_idx, width in [(0, 160), (1, 110), (2, 320)]:  # A, B, C
+        requests.append({
+            "updateDimensionProperties": {
+                "range": {"sheetId": SID_SETTINGS, "dimension": "COLUMNS",
+                          "startIndex": col_idx, "endIndex": col_idx + 1},
+                "properties": {"pixelSize": width},
+                "fields": "pixelSize",
+            }
+        })
+
+    # Hide col I (the active-filter helper).
+    requests.append({
+        "updateDimensionProperties": {
+            "range": {"sheetId": SID_SETTINGS, "dimension": "COLUMNS",
+                      "startIndex": 8, "endIndex": 9},
+            "properties": {"hiddenByUser": True},
+            "fields": "hiddenByUser",
+        }
+    })
+
     # Pot table header bold (row 2 / index 1)
     requests.append({
         "repeatCell": {
@@ -542,19 +585,28 @@ def make_format_requests():
         }
     })
 
-    # Currency on F-H (cols 5-7)
+    # Currency on C (Owed) and G-I (Total Cash, Pot Contribution, Bounty)
     requests.append({
         "repeatCell": {
             "range": {"sheetId": SID_REGISTRATION,
                       "startRowIndex": 1, "endRowIndex": LAST_PLAYER_ROW,
-                      "startColumnIndex": 5, "endColumnIndex": 8},
+                      "startColumnIndex": 2, "endColumnIndex": 3},
+            "cell": {"userEnteredFormat": currency_fmt()},
+            "fields": "userEnteredFormat.numberFormat",
+        }
+    })
+    requests.append({
+        "repeatCell": {
+            "range": {"sheetId": SID_REGISTRATION,
+                      "startRowIndex": 1, "endRowIndex": LAST_PLAYER_ROW,
+                      "startColumnIndex": 6, "endColumnIndex": 9},
             "cell": {"userEnteredFormat": currency_fmt()},
             "fields": "userEnteredFormat.numberFormat",
         }
     })
 
-    # Pot dropdown sourced from Settings col D (helper "active" column).
-    # Tiers with blank Buy-in show "" in col D and are skipped from the dropdown.
+    # Pot dropdown sourced from Settings col I (hidden helper "active" column).
+    # Tiers with blank Buy-in show "" there and are skipped from the dropdown.
     requests.append({
         "setDataValidation": {
             "range": {"sheetId": SID_REGISTRATION,
@@ -565,7 +617,7 @@ def make_format_requests():
                     "type": "ONE_OF_RANGE",
                     "values": [{
                         "userEnteredValue":
-                            f"=Settings!$D${POT_FIRST_ROW}:$D${POT_LAST_ROW}"
+                            f"=Settings!$I${POT_FIRST_ROW}:$I${POT_LAST_ROW}"
                     }],
                 },
                 "showCustomUi": True,
@@ -574,22 +626,22 @@ def make_format_requests():
         }
     })
 
-    # Buy-in checkbox
-    requests.append({
-        "setDataValidation": {
-            "range": {"sheetId": SID_REGISTRATION,
-                      "startRowIndex": 1, "endRowIndex": LAST_PLAYER_ROW,
-                      "startColumnIndex": 2, "endColumnIndex": 3},
-            "rule": {"condition": {"type": "BOOLEAN"}, "showCustomUi": True},
-        }
-    })
-
-    # Rebuy 0-2
+    # Buy-in Paid? checkbox — col D (index 3, shifted from C)
     requests.append({
         "setDataValidation": {
             "range": {"sheetId": SID_REGISTRATION,
                       "startRowIndex": 1, "endRowIndex": LAST_PLAYER_ROW,
                       "startColumnIndex": 3, "endColumnIndex": 4},
+            "rule": {"condition": {"type": "BOOLEAN"}, "showCustomUi": True},
+        }
+    })
+
+    # Rebuy Count 0-2 — col E (index 4, shifted from D)
+    requests.append({
+        "setDataValidation": {
+            "range": {"sheetId": SID_REGISTRATION,
+                      "startRowIndex": 1, "endRowIndex": LAST_PLAYER_ROW,
+                      "startColumnIndex": 4, "endColumnIndex": 5},
             "rule": {
                 "condition": {
                     "type": "NUMBER_BETWEEN",
@@ -604,23 +656,23 @@ def make_format_requests():
         }
     })
 
-    # Top-off checkbox
+    # Top-Off? checkbox — col F (index 5, shifted from E)
     requests.append({
         "setDataValidation": {
             "range": {"sheetId": SID_REGISTRATION,
                       "startRowIndex": 1, "endRowIndex": LAST_PLAYER_ROW,
-                      "startColumnIndex": 4, "endColumnIndex": 5},
+                      "startColumnIndex": 5, "endColumnIndex": 6},
             "rule": {"condition": {"type": "BOOLEAN"}, "showCustomUi": True},
         }
     })
 
-    # Alternating row banding on Registration data rows (rows 2-31)
+    # Alternating row banding on Registration data rows (cols A-I)
     requests.append({
         "addBanding": {
             "bandedRange": {
                 "range": {"sheetId": SID_REGISTRATION,
                           "startRowIndex": 0, "endRowIndex": LAST_PLAYER_ROW,
-                          "startColumnIndex": 0, "endColumnIndex": 8},
+                          "startColumnIndex": 0, "endColumnIndex": 9},
                 "rowProperties": {
                     "headerColor": LIGHT_GRAY,
                     "firstBandColor": WHITE,
@@ -955,15 +1007,26 @@ def populate_data(sheets_service, spreadsheet_id):
         "values": settings_rows,
     })
 
+    # Helper "active filter" formulas in col I rows 3-8 (hidden column).
+    # =IF(B>0, A, "") — name flows through only when Buy-in is set.
+    helper_formulas = [
+        [f'=IF(B{POT_FIRST_ROW + i}>0,A{POT_FIRST_ROW + i},"")']
+        for i in range(POT_COUNT)
+    ]
+    data.append({
+        "range": f"Settings!I{POT_FIRST_ROW}:I{POT_LAST_ROW}",
+        "values": helper_formulas,
+    })
+
     reg_headers = build_registration_headers()
     data.append({
-        "range": "Registration!A1:H1",
+        "range": "Registration!A1:I1",
         "values": reg_headers,
     })
 
     reg_formulas_data = build_registration_formulas()
     data.append({
-        "range": f"Registration!A2:H{LAST_PLAYER_ROW}",
+        "range": f"Registration!A2:I{LAST_PLAYER_ROW}",
         "values": reg_formulas_data,
     })
 
