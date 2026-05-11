@@ -358,7 +358,8 @@ def build_dashboard_data():
             f"Registration!$H$2:$H${lr})*(1-Settings!$B$13/100))"
         )
 
-        # Place columns D-H (1st-5th)
+        # Place columns D-H (1st-5th). Round down to whole dollars (not $5)
+        # so small pots like 2× Shrimp ($2 total) don't disappear into FLOOR(2,5)=0.
         place_formulas = []
         for place_idx in range(5):
             pct_col = col_letter(3 + place_idx)  # D, E, F, G, H
@@ -367,7 +368,7 @@ def build_dashboard_data():
             ifs = _tier_lookup_ifs(count_cell, pct_col)
             place_formulas.append(
                 f"=IFERROR(IF({count_cell}<=0,\"\","
-                f"FLOOR({total_cell}*({ifs})/100,5)),\"\")"
+                f"FLOOR({total_cell}*({ifs})/100,1)),\"\")"
             )
 
         rows.append([name_formula, count_formula, total_formula] + place_formulas)
