@@ -12,8 +12,10 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: center;
-    height: 100vh;
+    justify-content: flex-start;
+    padding: 12px 16px 24px;
+    min-height: 100vh;
+    overflow-y: auto;
     transition: background 0.15s, color 0.15s;
     user-select: none;
   }
@@ -81,9 +83,12 @@
     letter-spacing: 0.05em;
   }
 
+  #btn-prev      { background: #7f8c8d; color: #fff; }
   #btn-pause     { background: #3a8ef6; color: #fff; }
   #btn-next      { background: #27ae60; color: #fff; }
   #btn-snooze    { background: #e67e22; color: #fff; display: none; }
+
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
 
   button:hover { opacity: 0.85; }
 
@@ -105,11 +110,14 @@
 </head>
 <body>
 
-<div style="display:flex; align-items:center; gap:8px; margin-bottom:6px; opacity:0.6; font-size:0.85em;">
-  🕐 Start time: <input id="start-time" type="time" value="18:00"
+<div style="display:flex; align-items:center; gap:16px; margin-bottom:6px; opacity:0.6; font-size:0.85em;">
+  <span>🕐 Start time: <input id="start-time" type="time" value="18:00"
     style="background:transparent; border:none; border-bottom:1px solid rgba(255,255,255,0.3); color:inherit; font-size:1em; width:80px;"
-    onchange="updateStartTime()">
+    onchange="updateStartTime()"></span>
   <span id="end-time-display"></span>
+  <span>🔔 Beeps: <input id="beep-count" type="number" min="1" max="500" value="10"
+    style="background:transparent; border:none; border-bottom:1px solid rgba(255,255,255,0.3); color:inherit; font-size:1em; width:60px; text-align:center;"
+    onchange="saveBeepCount()"></span>
 </div>
 <div id="level-label">Level 1</div>
 <div id="blinds">— / —</div>
@@ -119,6 +127,7 @@
 <div id="alert-message"></div>
 
 <div class="btn-row">
+  <button id="btn-prev"   onclick="prevLevel()">⏮ Prev</button>
   <button id="btn-pause"  onclick="togglePause()">⏸ Pause</button>
   <button id="btn-next"   onclick="nextLevel()">Next Level ⏭</button>
 </div>
@@ -185,6 +194,7 @@ function loadLevel(idx) {
   updateTimerDisplay();
   updateProgress();
   updateNextInfo();
+  updatePrevButton();
 }
 
 function updateTimerDisplay() {
@@ -249,25 +259,65 @@ function stopFlash() {
   clearInterval(flashInterval);
   flashInterval = null;
   document.body.className = '';
+  stopBeep();
 }
 
+var beepInterval = null;
+var beepCtx = null;
+var beepsPlayed = 0;
+
 function beep() {
-  var ctx = new (window.AudioContext || window.webkitAudioContext)();
-  for (var i = 0; i < 3; i++) {
-    (function(delay) {
-      setTimeout(function() {
-        var osc = ctx.createOscillator();
-        var gain = ctx.createGain();
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.frequency.value = 880;
-        gain.gain.setValueAtTime(0.4, ctx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
-        osc.start(ctx.currentTime);
-        osc.stop(ctx.currentTime + 0.4);
-      }, delay);
-    })(i * 500);
+  stopBeep();
+  var maxBeeps = parseInt(document.getElementById('beep-count').value) || 10;
+  if (maxBeeps < 1) return;
+  try {
+    beepCtx = new (window.AudioContext || window.webkitAudioContext)();
+  } catch(e) { return; }
+  beepsPlayed = 0;
+  playSingleBeep();
+  beepsPlayed++;
+  beepInterval = setInterval(function() {
+    if (!alerting || beepsPlayed >= maxBeeps) {
+      stopBeep();
+      return;
+    }
+    playSingleBeep();
+    beepsPlayed++;
+  }, 500);
+}
+
+function playSingleBeep() {
+  if (!beepCtx) return;
+  var osc = beepCtx.createOscillator();
+  var gain = beepCtx.createGain();
+  osc.connect(gain);
+  gain.connect(beepCtx.destination);
+  osc.frequency.value = 880;
+  gain.gain.setValueAtTime(0.4, beepCtx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, beepCtx.currentTime + 0.4);
+  osc.start(beepCtx.currentTime);
+  osc.stop(beepCtx.currentTime + 0.4);
+}
+
+function stopBeep() {
+  if (beepInterval) {
+    clearInterval(beepInterval);
+    beepInterval = null;
   }
+}
+
+function saveBeepCount() {
+  try {
+    localStorage.setItem('pokerTimerBeepCount',
+      document.getElementById('beep-count').value);
+  } catch(e) {}
+}
+
+function loadBeepCount() {
+  try {
+    var saved = localStorage.getItem('pokerTimerBeepCount');
+    if (saved) document.getElementById('beep-count').value = saved;
+  } catch(e) {}
 }
 
 // ── Button actions ────────────────────────────────────────────────────────────
@@ -286,9 +336,22 @@ function nextLevel() {
     document.getElementById('next-info').textContent = '';
     document.getElementById('alert-message').textContent = 'Good game everyone!';
     clearInterval(tickInterval);
+    updatePrevButton();
     return;
   }
   loadLevel(currentIndex + 1);
+}
+
+function prevLevel() {
+  stopFlash();
+  if (currentIndex > 0) {
+    loadLevel(currentIndex - 1);
+  }
+}
+
+function updatePrevButton() {
+  var btn = document.getElementById('btn-prev');
+  if (btn) btn.disabled = (currentIndex <= 0);
 }
 
 function snooze() {
@@ -352,6 +415,7 @@ function updateEndTimeDisplay() {
 }
 
 // ── Start ─────────────────────────────────────────────────────────────────────
+loadBeepCount();
 init();
 updateEndTimeDisplay();
 </script>

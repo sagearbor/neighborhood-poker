@@ -15,20 +15,27 @@ A **Google Sheets** tournament manager for "Pro-Am Concurrent Flight" poker nigh
 ```bash
 pip install google-auth google-auth-oauthlib google-api-python-client
 
+# One-time: authorize with all required scopes (spreadsheets, drive, script.projects)
+python3 setup_auth.py
+
 # Build the original "Concurrent Flight" sheet (whales can win main pot)
-python3 create_sheet.py [--credentials path/to/credentials.json]
+python3 create_sheet.py [--no-timer-install]
 
-# Build the "Separate Prize Pools" variant (fish $$ and whale $$ are walled off)
-python3 create_sheet_separate_pools.py [--credentials path/to/credentials.json]
+# Build the "Separate Prize Pools" variant (Fish/Whale pots walled off)
+python3 create_sheet_separate_pools.py [--no-timer-install]
 
-# Update only the Blinds Timer tab on an existing sheet
+# Build the "Multi-Tier" variant (configurable 2-6 separate pots)
+python3 create_sheet_multi_tier.py [--no-timer-install]
+
+# Update only the Blinds Timer tab on the original (hardcoded) sheet
 python3 update_blinds.py
 ```
 
 Notes:
-- `create_sheet.py` expects a **service-account** JSON (defaults to `arborfam-hub-token.json` in CWD).
-- `create_sheet_separate_pools.py` and `update_blinds.py` both use a **user OAuth token** (defaults to `/Users/sophie.arborbot/.openclaw/workspace/arborfam-hub-token.json`). Token must carry both `spreadsheets` and `drive` scopes.
-- `update_blinds.py` also has a hardcoded `SPREADSHEET_ID` and `SID_BLINDS` — only works against the original sheet without editing.
+- All three `create_sheet*.py` scripts now use the **same user OAuth token** at `/Users/sophie.arborbot/.openclaw/workspace/arborfam-hub-token.json` and the same scope set (`spreadsheets`, `drive`, `script.projects`). The Apps Script API must be enabled in the Google Cloud project that issued the token (https://console.cloud.google.com/apis/library/script.googleapis.com).
+- Each `create_sheet*.py` script auto-installs the Apps Script blinds timer on the new sheet via `apps_script_installer.try_install_timer`. Pass `--no-timer-install` to skip. Failures fall back gracefully with a hint and a pointer to `BLINDS_TIMER_SETUP.md`.
+- `setup_auth.py` overwrites the token at `DEFAULT_TOKEN_PATH` after running a local-server OAuth flow. Re-run whenever the scope set changes.
+- `update_blinds.py` still has a hardcoded `SPREADSHEET_ID` and `SID_BLINDS` — only works against the original Q2-2026 sheet without editing. New sheets ship with the full schedule inline, so this script is rarely needed.
 - There are no tests, linters, or build steps.
 
 ## Architecture
@@ -62,7 +69,7 @@ Six tabs with fixed `sheetId` constants `SID_SETTINGS=0 … SID_BLINDS=5`:
 
 ### Apps Script timer
 
-`apps-script/blinds_timer.gs` + `apps-script/timer_dialog.html` are not auto-deployed — users copy/paste them into the spreadsheet's Apps Script editor following `BLINDS_TIMER_SETUP.md`. The `.gs` file reads the schedule from the sheet at runtime and injects it into the HTML template as `levelsJson`, so editing the schedule in the sheet is the supported way to change blind structure; the timer picks up changes on next start.
+`apps-script/blinds_timer.gs` + `apps-script/timer_dialog.html` are auto-deployed by `apps_script_installer.install_timer`, which creates a **container-bound** Apps Script project on the target spreadsheet via the Apps Script API (`projects.create` with `parentId=spreadsheet_id`, then `projects.updateContent` to upload the two source files plus an `appsscript.json` manifest). The bound script's `onOpen` is a simple trigger and adds the `🃏 Poker Timer` menu without user authorization; clicking Start Timer triggers the standard Apps Script auth prompt the first time. The `.gs` file reads the schedule from the sheet at runtime, so editing the schedule in `⏱ Blinds Timer` tab still propagates to the timer on next start. The manual copy-paste flow in `BLINDS_TIMER_SETUP.md` is now the fallback, used only when the API/scope isn't available.
 
 ## Conventions specific to this repo
 
