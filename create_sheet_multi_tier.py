@@ -1,29 +1,28 @@
 #!/usr/bin/env python3
 """
-Create the Poker Tournament Manager — Separate Prize Pools Edition Google Sheet.
+Create the Poker Tournament Manager — Multi-Tier Edition Google Sheet.
 
-Variant of create_sheet.py where Fish and Whale prize pools are COMPLETELY
-separate. Fish buy-ins fund the Fish Pot and pay only Fish placements; Whale
-buy-ins fund the Whale Pot and pay only Whale placements. The $10 headhunter
-bounty chip (configurable in Settings!B4) is the only cross-track incentive —
-whales still want to bust short-stacked fish for the bounty.
+Generalization of create_sheet_separate_pools.py from 2 tiers (Fish/Whale) to
+up to 6 configurable tiers ("pots"). Each tier has its own buy-in amount, its
+own separate prize pool, and its own placement payouts that scale with that
+tier's player count. The $10 headhunter bounty (Settings!B10) is the only
+cross-tier incentive.
 
-Differences vs. create_sheet.py:
-  - No Main Pot / Side Pot. Each player's buy-in feeds ONLY their track pot.
-  - Each track has its own payout table that scales with that track's player
-    count, using the same payout tier table from Settings applied independently.
-  - Settings adds a "Suggested Bounty" calc cell (= 25% of base buy-in, rounded);
-    actual bounty in B4 remains user-editable.
-  - Payout tier table adds a 1-player tier (1 place at 100%) so very small
-    tracks still pay out cleanly.
-  - Payout-lookup formulas are wrapped in AND() so IFS() actually returns a
-    percentage rather than TRUE/FALSE at boundary cases.
-  - The Blinds Timer tab ships with the full schedule inline — no separate
-    update_blinds.py step required.
+Differences vs. create_sheet_separate_pools.py:
+  - Settings has a 6-row "Pot Table" instead of fixed Base/Multiplier inputs.
+    Fill any rows in any order; blank rows are inactive. Default tiers:
+        🦐 Shrimp ($1) | 🐟 Fish ($10) | 🐠 Tuna ($40) | 🐋 Whale ($140)
+  - Registration's Track dropdown auto-populates from non-blank pot names.
+  - Dashboard generates one row per active tier showing pot total + 1st-5th
+    place dollar amounts (scaled by that tier's player count via the same
+    Settings payout-tier table).
+  - Single-player tier auto-wins the pot (Option 1: no merging, no refund).
+  - Apps Script blinds timer auto-installs (if the script.projects scope is
+    granted — run setup_auth.py once to enable).
 
 Usage:
     pip install google-auth google-auth-oauthlib google-api-python-client
-    python3 create_sheet_separate_pools.py [--credentials path/to/credentials.json]
+    python3 create_sheet_multi_tier.py [--credentials path/to/credentials.json]
 """
 
 import argparse
@@ -45,9 +44,8 @@ SCOPES = [
     "https://www.googleapis.com/auth/script.projects",
 ]
 
-SHEET_TITLE = "Poker Tournament Manager — Separate Prize Pools Edition"
+SHEET_TITLE = "Poker Tournament Manager — Multi-Tier Edition"
 
-# Default path matches update_blinds.py — a user OAuth token JSON.
 DEFAULT_CREDENTIALS = "/Users/sophie.arborbot/.openclaw/workspace/arborfam-hub-token.json"
 
 PLAYER_ROWS = 30
@@ -61,23 +59,29 @@ SID_LIVE = 3
 SID_INSTRUCTIONS = 4
 SID_BLINDS = 5
 
+# Pot table rows in Settings (1-indexed): up to 6 user-defined pots
+POT_FIRST_ROW = 3
+POT_LAST_ROW = 8
+POT_COUNT = POT_LAST_ROW - POT_FIRST_ROW + 1  # 6
+
+# Payout tier table rows in Settings (1-indexed): 6 tiers (1, 2-4, 5-8, ...)
+TIER_FIRST_ROW = 18
+TIER_LAST_ROW = 23
+
+# Dashboard per-tier table rows (1-indexed): 6 tier display rows
+DASH_TIER_HEADER_ROW = 10  # sub-header for the per-pot table
+DASH_TIER_FIRST_ROW = 11
+DASH_TIER_LAST_ROW = DASH_TIER_FIRST_ROW + POT_COUNT - 1  # 16
+
 # Colors
 WHITE = {"red": 1, "green": 1, "blue": 1}
 LIGHT_GRAY = {"red": 0.93, "green": 0.93, "blue": 0.93}
 LIGHT_BLUE = {"red": 0.85, "green": 0.92, "blue": 1.0}
 LIGHT_GOLD = {"red": 1.0, "green": 0.95, "blue": 0.8}
-CHART_BLUE = {"red": 0.26, "green": 0.52, "blue": 0.96}
-CHART_GOLD = {"red": 0.98, "green": 0.74, "blue": 0.18}
-
-# Blinds Timer colors
+SETTINGS_BG = {"red": 0.93, "green": 0.96, "blue": 1.0}
 DARK_HEADER = {"red": 0.15, "green": 0.15, "blue": 0.3}
 ORANGE_BREAK = {"red": 1.0, "green": 0.8, "blue": 0.4}
 LIGHT_ROW = {"red": 0.95, "green": 0.95, "blue": 1.0}
-SETTINGS_BG = {"red": 0.93, "green": 0.96, "blue": 1.0}
-
-# Payout tier table position in Settings (1-indexed sheet rows)
-TIER_FIRST_ROW = 17
-TIER_LAST_ROW = 22  # 6 tiers (rows 17-22)
 
 
 # ---------------------------------------------------------------------------
@@ -120,50 +124,90 @@ def currency_fmt():
     return {"numberFormat": {"type": "NUMBER", "pattern": '$#,##0.00'}}
 
 
+def _tier_lookup_ifs(count_cell: str, pct_col_letter: str) -> str:
+    """IFS lookup against Settings payout tier table (rows TIER_FIRST_ROW..LAST).
+    Each tier wrapped in AND() so IFS returns the percentage, not a boolean."""
+    pairs = []
+    for tier_row in range(TIER_LAST_ROW, TIER_FIRST_ROW - 1, -1):
+        cond = (
+            f"AND({count_cell}>=Settings!$A${tier_row},"
+            f"{count_cell}<=Settings!$B${tier_row})"
+        )
+        val = f"Settings!${pct_col_letter}${tier_row}"
+        pairs.append(f"{cond},{val}")
+    return f"IFERROR(IFS({','.join(pairs)}),0)"
+
+
 # ---------------------------------------------------------------------------
 # Settings tab
 # ---------------------------------------------------------------------------
 
 def build_settings_data():
-    """Settings tab layout — header on row 16, tier rows 17-22 (1-indexed)."""
+    """Settings tab layout:
+      Row 1:        ⚙️ SETTINGS
+      Row 2:        Pot table header (Pot Name | Buy-in | Note)
+      Rows 3-8:     6 user-fillable pot rows (4 default-filled, 2 blank)
+      Row 9:        blank
+      Row 10-13:    Bounty / Top-Off / Max Rebuys / Rake
+      Row 14:       blank
+      Row 15:       Suggested Bounty (calc)
+      Row 16:       blank
+      Row 17:       Payout tier header
+      Rows 18-23:   6 payout tiers (1, 2-4, 5-8, 9-15, 16-25, 26+)
+    """
     rows = []
 
-    # Sheet row 1: title
+    # Row 1
     rows.append(["⚙️ SETTINGS"])
 
-    # Sheet rows 2-7: 6 inputs
-    inputs = [
-        ("Base Buy-in ($)", 40, "Standard entry for Low (Fish) track"),
-        ("High Roller Multiplier", 4, "High (Whale) buy-in = base × this"),
-        ("Bounty ($)", 10, "Headhunter chip per knockout — edit freely"),
+    # Row 2: pot table header
+    rows.append(["Pot Name", "Buy-in ($)", "Note"])
+
+    # Rows 3-8: 6 pot rows. Default-fill 4, leave 2 blank.
+    default_pots = [
+        ("🦐 Shrimp", 1, "Casual / learning"),
+        ("🐟 Fish", 10, "Low-stakes fun"),
+        ("🐠 Tuna", 40, "Mid-stakes"),
+        ("🐋 Whale", 140, "High-stakes"),
+        ("", "", ""),
+        ("", "", ""),
+    ]
+    for name, buyin, note in default_pots:
+        rows.append([name, buyin, note])
+
+    # Row 9: blank
+    rows.append([])
+
+    # Rows 10-13: configuration
+    config = [
+        ("Bounty ($)", 10, "Headhunter chip per knockout"),
         ("Top-Off Multiplier", 0.5, "Break top-off as fraction of buy-in"),
         ("Max Rebuys", 2, "Max rebuys per player"),
         ("Rake %", 0, "House rake (0 for home games)"),
     ]
-    for label, val, note in inputs:
+    for label, val, note in config:
         rows.append([label, val, note])
 
-    # Sheet row 8: blank
+    # Row 14: blank
     rows.append([])
 
-    # Sheet rows 9-15: 7 calculated values
-    calcs = [
-        ("Fish Buy-in", "=B2"),
-        ("Whale Buy-in", "=B2*B3"),
-        ("Suggested Bounty", "=ROUND(B2*0.25,0)"),
-        ("Low Top-Off Cost", "=B2*B5"),
-        ("High Top-Off Cost", "=B2*B3*B5"),
-        ("Low Total Entry", "=B2+B4"),
-        ("High Total Entry", "=(B2*B3)+B4"),
-    ]
-    for label, formula in calcs:
-        rows.append([label, "→", formula])
+    # Row 15: Suggested Bounty (20% of smallest active pot buy-in, rounded, min $1)
+    rows.append([
+        "Suggested Bounty",
+        "→",
+        f"=IFERROR(MAX(1,ROUND(SMALL(FILTER($B${POT_FIRST_ROW}:$B${POT_LAST_ROW},"
+        f"$B${POT_FIRST_ROW}:$B${POT_LAST_ROW}>0),1)*0.2,0)),\"\")",
+        "20% of smallest active pot buy-in",
+    ])
 
-    # Sheet row 16: payout header
+    # Row 16: blank
+    rows.append([])
+
+    # Row 17: payout tier header
     rows.append(["Min Players", "Max Players", "Places Paid",
                  "1st%", "2nd%", "3rd%", "4th%", "5th%"])
 
-    # Sheet rows 17-22: 6 payout tiers (new 1-player tier on top)
+    # Rows 18-23: 6 payout tiers
     tiers = [
         [1, 1, 1, 100, 0, 0, 0, 0],
         [2, 4, 1, 100, 0, 0, 0, 0],
@@ -183,48 +227,43 @@ def build_settings_data():
 # ---------------------------------------------------------------------------
 
 def build_registration_headers():
-    return [["Player Name", "Track", "Buy-in Paid?", "Rebuy Count",
-             "Top-Off?", "Total Cash", "Fish Pot", "Whale Pot", "Bounty"]]
+    return [["Player Name", "Pot", "Buy-in Paid?", "Rebuy Count",
+             "Top-Off?", "Total Cash", "Pot Contribution", "Bounty"]]
 
 
 def reg_formulas(r: int) -> list:
-    """Formulas for columns F-I at 1-based row r."""
-    # F: Total Cash collected from this player (entry+rebuys with bounty,
-    # plus top-off without bounty).
+    """Formulas for columns F-H at 1-based row r.
+
+    Each player's pot is looked up by tier name from Settings!A3:B8.
+    """
+    pot_lookup = (
+        f"VLOOKUP(B{r},Settings!$A${POT_FIRST_ROW}:$B${POT_LAST_ROW},2,FALSE)"
+    )
+    bounty = "Settings!$B$10"
+    topoff_mult = "Settings!$B$11"
+
+    # F: Total Cash — entry (incl bounty) + rebuys (incl bounty) + topoff (no bounty)
     f_total = (
-        f'=IF(C{r},IF(B{r}="High",(Settings!$B$2*Settings!$B$3)+Settings!$B$4,'
-        f"Settings!$B$2+Settings!$B$4),0)"
-        f"+D{r}*IF(B{r}=\"High\",(Settings!$B$2*Settings!$B$3)+Settings!$B$4,"
-        f"Settings!$B$2+Settings!$B$4)"
-        f"+IF(E{r},IF(B{r}=\"High\",Settings!$B$2*Settings!$B$3*Settings!$B$5,"
-        f"Settings!$B$2*Settings!$B$5),0)"
-    )
-
-    # G: Fish Pot — full Fish buy-in / rebuy / top-off contribution
-    g_fish = (
-        f'=IF(B{r}="Low",'
-        f"IF(C{r},Settings!$B$2,0)"
-        f"+D{r}*Settings!$B$2"
-        f"+IF(E{r},Settings!$B$2*Settings!$B$5,0)"
+        f"=IFERROR("
+        f"IF(C{r},{pot_lookup}+{bounty},0)"
+        f"+D{r}*({pot_lookup}+{bounty})"
+        f"+IF(E{r},{pot_lookup}*{topoff_mult},0)"
         f",0)"
     )
 
-    # H: Whale Pot — full Whale buy-in / rebuy / top-off contribution
-    h_whale = (
-        f'=IF(B{r}="High",'
-        f"IF(C{r},Settings!$B$2*Settings!$B$3,0)"
-        f"+D{r}*Settings!$B$2*Settings!$B$3"
-        f"+IF(E{r},Settings!$B$2*Settings!$B$3*Settings!$B$5,0)"
+    # G: Pot Contribution — buy-in portion only (no bounty)
+    g_pot = (
+        f"=IFERROR("
+        f"IF(C{r},{pot_lookup},0)"
+        f"+D{r}*{pot_lookup}"
+        f"+IF(E{r},{pot_lookup}*{topoff_mult},0)"
         f",0)"
     )
 
-    # I: Bounty (any track)
-    i_bounty = (
-        f"=IF(C{r},Settings!$B$4,0)"
-        f"+D{r}*Settings!$B$4"
-    )
+    # H: Bounty — independent of pot
+    h_bounty = f"=IF(C{r},{bounty},0)+D{r}*{bounty}"
 
-    return [f_total, g_fish, h_whale, i_bounty]
+    return [f_total, g_pot, h_bounty]
 
 
 def build_registration_formulas():
@@ -239,43 +278,19 @@ def build_registration_formulas():
 # Dashboard tab
 # ---------------------------------------------------------------------------
 
-def _tier_lookup_formula(count_cell: str, pct_col_letter: str) -> str:
-    """Build IFS lookup against the 6-row tier table at Settings rows 17-22.
-
-    Each tier condition is wrapped in AND() so IFS returns the percentage
-    value, not a boolean.
-    """
-    pairs = []
-    for tier_row in range(TIER_LAST_ROW, TIER_FIRST_ROW - 1, -1):
-        cond = (
-            f"AND({count_cell}>=Settings!A{tier_row},"
-            f"{count_cell}<=Settings!B{tier_row})"
-        )
-        val = f"Settings!{pct_col_letter}{tier_row}"
-        pairs.append(f"{cond},{val}")
-    return f"=IFERROR(IFS({','.join(pairs)}),0)"
-
-
 def build_dashboard_data():
     """Dashboard layout (Python indices = sheet rows minus 1):
-
-      0  📊 DASHBOARD
-      1  (blank)
-      2  Total Players       | B3
-      3  Fish (Low) Count    | B4
-      4  Whale (High) Count  | B5
-      5  (blank)
-      6  Total Cash in Box   | B7
-      7  Bounty Pool         | B8
-      8  Fish Pot Total      | B9
-      9  Whale Pot Total     | B10
-      10 Rake Amount         | B11
-      11 (blank)
-      12 FISH PAYOUTS header + chart helper header
-      13-17  fish places 1..5 (cols A-D) + chart helper E-G
-      18 (blank)
-      19 WHALE PAYOUTS header
-      20-24  whale places 1..5
+      Row 1:       📊 DASHBOARD
+      Row 2:       blank
+      Row 3:       Total Players       | =COUNTA(Reg!B2:B31)
+      Row 4:       Total Cash in Box   | =SUM(Reg!F)
+      Row 5:       Bounty Pool         | =SUM(Reg!H)
+      Row 6:       Rake Amount         | =SUM(Reg!G) * rake
+      Row 7:       Net Prize Pool      | =SUM(Reg!G) * (1-rake)
+      Row 8:       blank
+      Row 9:       PER-POT BREAKDOWN
+      Row 10:      sub-header: Pot Name | Players | Pot Total | 1st | 2nd | 3rd | 4th | 5th
+      Rows 11-16:  6 tier rows (one per Settings row 3-8)
     """
     lr = LAST_PLAYER_ROW
     rows = []
@@ -283,53 +298,52 @@ def build_dashboard_data():
     rows.append(["📊 DASHBOARD"])
     rows.append([])
 
-    rows.append(["Total Players",
-                 f'=COUNTIF(Registration!B2:B{lr},"Low")'
-                 f'+COUNTIF(Registration!B2:B{lr},"High")'])
-    rows.append(["Fish (Low) Count", f'=COUNTIF(Registration!B2:B{lr},"Low")'])
-    rows.append(["Whale (High) Count", f'=COUNTIF(Registration!B2:B{lr},"High")'])
-
-    rows.append([])
-
+    rows.append(["Total Players", f"=COUNTA(Registration!B2:B{lr})"])
     rows.append(["Total Cash in Box", f"=SUM(Registration!F2:F{lr})"])
-    rows.append(["Bounty Pool", f"=SUM(Registration!I2:I{lr})"])
-    rows.append(["Fish Pot Total",
-                 f"=SUM(Registration!G2:G{lr})*(1-Settings!$B$7/100)"])
-    rows.append(["Whale Pot Total",
-                 f"=SUM(Registration!H2:H{lr})*(1-Settings!$B$7/100)"])
+    rows.append(["Bounty Pool", f"=SUM(Registration!H2:H{lr})"])
     rows.append(["Rake Amount",
-                 f"=(SUM(Registration!G2:G{lr})+SUM(Registration!H2:H{lr}))"
-                 f"*Settings!$B$7/100"])
+                 f"=SUM(Registration!G2:G{lr})*Settings!$B$13/100"])
+    rows.append(["Net Prize Pool",
+                 f"=SUM(Registration!G2:G{lr})*(1-Settings!$B$13/100)"])
 
     rows.append([])
+    rows.append(["PER-POT BREAKDOWN"])
 
-    # FISH PAYOUTS header (with chart helper cols E-G)
-    rows.append(["FISH PAYOUTS", "Place", "Pct%", "Amount ($)",
-                 "Place", "🐟 Fish ($)", "🐋 Whales ($)"])
+    # Sub-header (sheet row 10 = Python index 9)
+    rows.append(["Pot Name", "Players", "Pot Total",
+                 "1st", "2nd", "3rd", "4th", "5th"])
 
-    places = ["1st", "2nd", "3rd", "4th", "5th"]
-    fish_first_row = 14   # 1-indexed sheet row of first fish payout line
-    whale_first_row = 21  # 1-indexed sheet row of first whale payout line
+    # 6 tier rows (sheet rows 11-16 = Python indices 10-15)
+    for offset in range(POT_COUNT):
+        settings_row = POT_FIRST_ROW + offset  # 3..8
+        dash_row = DASH_TIER_FIRST_ROW + offset  # 11..16
 
-    for i, place in enumerate(places):
-        pct_col = col_letter(3 + i)  # D=1st%, E=2nd%, F=3rd%, G=4th%, H=5th%
-        pct_formula = _tier_lookup_formula("$B$4", pct_col)  # B4 = fish count
-        amt_formula = f"=FLOOR($B$9*C{fish_first_row + i}/100,5)"  # B9 = fish pot total
-        chart_place = place
-        fish_chart = f"=D{fish_first_row + i}"
-        whale_chart = f"=D{whale_first_row + i}"
-        rows.append(["", place, pct_formula, amt_formula,
-                     chart_place, fish_chart, whale_chart])
+        pot_name_cell = f"Settings!$A${settings_row}"
 
-    rows.append([])  # blank between tables
+        name_formula = f"={pot_name_cell}"
+        count_formula = (
+            f"=IF({pot_name_cell}=\"\",\"\","
+            f"COUNTIF(Registration!$B$2:$B${lr},{pot_name_cell}))"
+        )
+        total_formula = (
+            f"=IF({pot_name_cell}=\"\",\"\","
+            f"SUMIF(Registration!$B$2:$B${lr},{pot_name_cell},"
+            f"Registration!$G$2:$G${lr})*(1-Settings!$B$13/100))"
+        )
 
-    rows.append(["WHALE PAYOUTS", "Place", "Pct%", "Amount ($)"])
+        # Place columns D-H (1st-5th)
+        place_formulas = []
+        for place_idx in range(5):
+            pct_col = col_letter(3 + place_idx)  # D, E, F, G, H
+            count_cell = f"$B${dash_row}"
+            total_cell = f"$C${dash_row}"
+            ifs = _tier_lookup_ifs(count_cell, pct_col)
+            place_formulas.append(
+                f"=IFERROR(IF({count_cell}<=0,\"\","
+                f"FLOOR({total_cell}*({ifs})/100,5)),\"\")"
+            )
 
-    for i, place in enumerate(places):
-        pct_col = col_letter(3 + i)
-        pct_formula = _tier_lookup_formula("$B$5", pct_col)  # B5 = whale count
-        amt_formula = f"=FLOOR($B$10*C{whale_first_row + i}/100,5)"  # B10 = whale pot total
-        rows.append(["", place, pct_formula, amt_formula])
+        rows.append([name_formula, count_formula, total_formula] + place_formulas)
 
     return rows
 
@@ -340,33 +354,35 @@ def build_dashboard_data():
 
 def build_instructions_data():
     lines = [
-        ["📖 INSTRUCTIONS — SEPARATE PRIZE POOLS EDITION"],
+        ["📖 INSTRUCTIONS — MULTI-TIER EDITION"],
         [],
-        ["HOW THIS IS DIFFERENT FROM THE CONCURRENT FLIGHT EDITION"],
-        ["Fish and Whales play at the same physical table with the same chip stack,"],
-        ["but their PRIZE POOLS ARE COMPLETELY SEPARATE."],
-        ["  • Fish $40 buy-in → Fish Pot only. Whales cannot win it."],
-        ["  • Whale $160 buy-in → Whale Pot only. Fish cannot win it."],
-        ["  • Each track has its own payout table that scales independently"],
-        ["    with that track's player count."],
-        ["The Bounty (headhunter) chip is the only cross-track incentive: $10 (or"],
-        ["whatever you set in Settings!B4) per knockout regardless of victim's track."],
-        ["So whales still want to bust short-stacked fish."],
+        ["HOW THIS WORKS"],
+        ["This is a variable buy-in tournament with up to 6 separate pots."],
+        ["Each player picks a pot tier from the Registration dropdown — they"],
+        ["pay that tier's buy-in plus the bounty chip. Each pot pays out"],
+        ["independently to the top finishers WITHIN that tier."],
+        [""],
+        ["The bounty (Settings!B10) is the only cross-tier money: $10 (or"],
+        ["whatever you set) per knockout, regardless of victim's tier."],
+        [],
+        ["CONFIGURING POTS"],
+        ["Edit the Pot Table at Settings rows 3-8. Fill in any 2-6 rows;"],
+        ["leave the rest blank. Order doesn't matter. Defaults:"],
+        ["  🦐 Shrimp $1  |  🐟 Fish $10  |  🐠 Tuna $40  |  🐋 Whale $140"],
+        ["The Registration dropdown auto-updates from filled pot names."],
         [],
         ["HOW TO RUN TOURNAMENT NIGHT"],
-        ["1. Open the Registration tab before players arrive."],
-        ["2. Add each player's name in column A."],
-        ['3. Select their track — Low (Fish) or High (Whale) — from the dropdown.'],
-        ['4. Check "Buy-in Paid?" when they hand you cash.'],
-        ["5. Rebuys: increment Rebuy Count (max 2) if a player buys back in."],
-        ["6. Top-offs: check the Top-Off box during the break if they add chips."],
-        ["7. Watch the Dashboard tab for live totals — both pots + bounty pool."],
-        ["8. Pay out using the Dashboard payout tables:"],
-        ["   - Fish Pot: top N fish by bust-out order (scales with fish count)"],
-        ["   - Whale Pot: top N whales by bust-out order (scales with whale count)"],
-        ["   - Bounty: $10 per knockout from the bounty pool (any track)"],
+        ["1. Set up your pot tiers in Settings before players arrive."],
+        ["2. In Registration, add each player's name + pick their pot tier."],
+        ['3. Check "Buy-in Paid?" when they hand you cash.'],
+        ["4. Rebuys: increment Rebuy Count (max 2) if a player buys back in."],
+        ["5. Top-offs: check the Top-Off box during the break if they add chips."],
+        ["6. Watch the Dashboard — each tier shows count, pot, and 1st-5th payouts."],
+        ["7. Pay out at bust time using each tier's payout row."],
+        ["   - Top N finishers per tier cash (N depends on tier player count)"],
+        ["   - Bounty: $10 per knockout from the bounty pool (any tier)"],
         [],
-        ["HOW PLACES PAID SCALES (same tier table applied to each track separately)"],
+        ["HOW PLACES PAID SCALES (per tier, independently)"],
         ["  1 player:    1 place paid (100%)"],
         ["  2-4:         1 place (100%)"],
         ["  5-8:         2 places (65/35)"],
@@ -374,54 +390,35 @@ def build_instructions_data():
         ["  16-25:       4 places (45/27/17/11)"],
         ["  26+:         5 places (40/25/16/11/8)"],
         [],
-        ["HOW TO START A NEW QUARTER"],
-        ['1. Right-click the Registration tab → Duplicate.'],
-        ['2. Rename the duplicate (e.g., "Registration Q3 2026").'],
-        ["3. Clear all player data from the active Registration tab."],
-        ["4. The Dashboard automatically recalculates."],
-        [],
-        ["SETTINGS REFERENCE"],
-        ["Base Buy-in (B2): standard entry for Fish track (default $40)."],
-        ["High Roller Multiplier (B3): Whale buy-in = base × this (default 4× = $160)."],
-        ["Bounty (B4): per-knockout headhunter chip (default $10) — edit freely."],
-        ["  See the 'Suggested Bounty' calc cell for a 25%-of-buy-in starting point."],
-        ["Top-Off Multiplier (B5): break top-off as fraction of buy-in (default 0.5×)."],
-        ["Max Rebuys (B6): maximum rebuys allowed per player (default 2)."],
-        ["Rake % (B7): house rake percentage (default 0% for home games)."],
-        [],
         ["BLINDS TIMER"],
-        ["The same Apps Script timer works on this sheet — install it via"],
-        ["Extensions → Apps Script, following BLINDS_TIMER_SETUP.md."],
-        ["The full schedule is already populated in the ⏱ Blinds Timer tab."],
+        ["The 🃏 Poker Timer menu appears in the menu bar automatically"],
+        ["(installed via Apps Script API when this sheet was created)."],
+        ["Schedule lives in the ⏱ Blinds Timer tab — edit there to change blinds."],
         [],
-        ["SOURCE CODE & UPDATES"],
+        ["SOURCE CODE"],
         ["https://github.com/sagearbor/neighborhood-poker"],
     ]
     return lines
 
 
 # ---------------------------------------------------------------------------
-# Blinds Timer tab (full schedule inline — mirrors update_blinds.py output)
+# Blinds Timer tab (full schedule inline)
 # ---------------------------------------------------------------------------
 
 def build_blinds_data():
     rows = []
 
-    # Rows 0-3 (sheet 1-4): settings block
     rows.append(["⏱ BLINDS TIMER", "", "", "", "", ""])
     rows.append(["Starting Stack:", "10,000", "", "Ante starts at level:", 5, ""])
     rows.append(["Level duration default:", "20 min", "", "", "", ""])
     rows.append(["💡 Highlight the current row manually as you progress",
                  "", "", "", "", ""])
 
-    # Row 4 (sheet 5): blank
     rows.append([])
 
-    # Row 5 (sheet 6): header
     rows.append(["Level", "Small Blind", "Big Blind", "Ante",
                  "Duration (min)", "Total Time Elapsed"])
 
-    # Rows 6+ (sheet 7+): schedule (apps-script reads from sheet row 7 onward)
     schedule = [
         ("1", 25, 50, 20, False, ""),
         ("2", 50, 100, 20, False, ""),
@@ -440,7 +437,7 @@ def build_blinds_data():
         ("13", 2000, 4000, 15, False, ""),
     ]
 
-    data_start_row = 7  # 1-indexed sheet row of first data row
+    data_start_row = 7
     for i, (level, sb, bb, duration, is_break, note) in enumerate(schedule):
         row_1idx = data_start_row + i
         elapsed = f"=E{row_1idx}" if i == 0 else f"=F{row_1idx - 1}+E{row_1idx}"
@@ -462,7 +459,6 @@ def make_format_requests():
     requests = []
 
     # --- Settings tab ---
-    # Title bold (row 1)
     requests.append({
         "repeatCell": {
             "range": {"sheetId": SID_SETTINGS, "startRowIndex": 0, "endRowIndex": 1},
@@ -471,20 +467,52 @@ def make_format_requests():
         }
     })
 
-    # Calculated cells gray bg (rows 9-15 in sheet = Python 8-14)
+    # Pot table header bold (row 2 / index 1)
     requests.append({
         "repeatCell": {
-            "range": {"sheetId": SID_SETTINGS, "startRowIndex": 8, "endRowIndex": 15,
+            "range": {"sheetId": SID_SETTINGS, "startRowIndex": 1, "endRowIndex": 2,
                       "startColumnIndex": 0, "endColumnIndex": 3},
+            "cell": {"userEnteredFormat": bold_fmt()},
+            "fields": "userEnteredFormat.textFormat.bold",
+        }
+    })
+
+    # Pot table rows (rows 3-8 / indices 2-7): subtle background
+    requests.append({
+        "repeatCell": {
+            "range": {"sheetId": SID_SETTINGS,
+                      "startRowIndex": POT_FIRST_ROW - 1, "endRowIndex": POT_LAST_ROW,
+                      "startColumnIndex": 0, "endColumnIndex": 3},
+            "cell": {"userEnteredFormat": {"backgroundColor": SETTINGS_BG}},
+            "fields": "userEnteredFormat.backgroundColor",
+        }
+    })
+
+    # Buy-in column currency format
+    requests.append({
+        "repeatCell": {
+            "range": {"sheetId": SID_SETTINGS,
+                      "startRowIndex": POT_FIRST_ROW - 1, "endRowIndex": POT_LAST_ROW,
+                      "startColumnIndex": 1, "endColumnIndex": 2},
+            "cell": {"userEnteredFormat": currency_fmt()},
+            "fields": "userEnteredFormat.numberFormat",
+        }
+    })
+
+    # Suggested Bounty calc row (row 15 / index 14): gray background
+    requests.append({
+        "repeatCell": {
+            "range": {"sheetId": SID_SETTINGS, "startRowIndex": 14, "endRowIndex": 15,
+                      "startColumnIndex": 0, "endColumnIndex": 4},
             "cell": {"userEnteredFormat": {"backgroundColor": LIGHT_GRAY}},
             "fields": "userEnteredFormat.backgroundColor",
         }
     })
 
-    # Payout header bold (row 16 in sheet = Python 15)
+    # Payout tier header bold (row 17 / index 16)
     requests.append({
         "repeatCell": {
-            "range": {"sheetId": SID_SETTINGS, "startRowIndex": 15, "endRowIndex": 16},
+            "range": {"sheetId": SID_SETTINGS, "startRowIndex": 16, "endRowIndex": 17},
             "cell": {"userEnteredFormat": bold_fmt()},
             "fields": "userEnteredFormat.textFormat.bold",
         }
@@ -508,18 +536,18 @@ def make_format_requests():
         }
     })
 
-    # Currency on F-I
+    # Currency on F-H (cols 5-7)
     requests.append({
         "repeatCell": {
             "range": {"sheetId": SID_REGISTRATION,
                       "startRowIndex": 1, "endRowIndex": LAST_PLAYER_ROW,
-                      "startColumnIndex": 5, "endColumnIndex": 9},
+                      "startColumnIndex": 5, "endColumnIndex": 8},
             "cell": {"userEnteredFormat": currency_fmt()},
             "fields": "userEnteredFormat.numberFormat",
         }
     })
 
-    # Track dropdown
+    # Pot dropdown sourced from Settings!A3:A8 — auto-updates with pot table
     requests.append({
         "setDataValidation": {
             "range": {"sheetId": SID_REGISTRATION,
@@ -527,11 +555,11 @@ def make_format_requests():
                       "startColumnIndex": 1, "endColumnIndex": 2},
             "rule": {
                 "condition": {
-                    "type": "ONE_OF_LIST",
-                    "values": [
-                        {"userEnteredValue": "Low"},
-                        {"userEnteredValue": "High"},
-                    ],
+                    "type": "ONE_OF_RANGE",
+                    "values": [{
+                        "userEnteredValue":
+                            f"=Settings!$A${POT_FIRST_ROW}:$A${POT_LAST_ROW}"
+                    }],
                 },
                 "showCustomUi": True,
                 "strict": True,
@@ -579,44 +607,23 @@ def make_format_requests():
         }
     })
 
-    # CF: Low → blue, High → gold
+    # Alternating row banding on Registration data rows (rows 2-31)
     requests.append({
-        "addConditionalFormatRule": {
-            "rule": {
-                "ranges": [{"sheetId": SID_REGISTRATION,
-                            "startRowIndex": 1, "endRowIndex": LAST_PLAYER_ROW,
-                            "startColumnIndex": 0, "endColumnIndex": 9}],
-                "booleanRule": {
-                    "condition": {
-                        "type": "CUSTOM_FORMULA",
-                        "values": [{"userEnteredValue": '=$B2="Low"'}],
-                    },
-                    "format": {"backgroundColor": LIGHT_BLUE},
+        "addBanding": {
+            "bandedRange": {
+                "range": {"sheetId": SID_REGISTRATION,
+                          "startRowIndex": 0, "endRowIndex": LAST_PLAYER_ROW,
+                          "startColumnIndex": 0, "endColumnIndex": 8},
+                "rowProperties": {
+                    "headerColor": LIGHT_GRAY,
+                    "firstBandColor": WHITE,
+                    "secondBandColor": LIGHT_ROW,
                 },
-            },
-            "index": 0,
-        }
-    })
-    requests.append({
-        "addConditionalFormatRule": {
-            "rule": {
-                "ranges": [{"sheetId": SID_REGISTRATION,
-                            "startRowIndex": 1, "endRowIndex": LAST_PLAYER_ROW,
-                            "startColumnIndex": 0, "endColumnIndex": 9}],
-                "booleanRule": {
-                    "condition": {
-                        "type": "CUSTOM_FORMULA",
-                        "values": [{"userEnteredValue": '=$B2="High"'}],
-                    },
-                    "format": {"backgroundColor": LIGHT_GOLD},
-                },
-            },
-            "index": 1,
+            }
         }
     })
 
     # --- Dashboard tab ---
-    # Title bold
     requests.append({
         "repeatCell": {
             "range": {"sheetId": SID_DASHBOARD, "startRowIndex": 0, "endRowIndex": 1},
@@ -625,57 +632,61 @@ def make_format_requests():
         }
     })
 
-    # Summary labels bold (col A, Python rows 2-10 = sheet rows 3-11)
+    # Summary labels bold (col A, rows 3-7)
     requests.append({
         "repeatCell": {
             "range": {"sheetId": SID_DASHBOARD,
-                      "startRowIndex": 2, "endRowIndex": 11,
+                      "startRowIndex": 2, "endRowIndex": 7,
                       "startColumnIndex": 0, "endColumnIndex": 1},
             "cell": {"userEnteredFormat": bold_fmt()},
             "fields": "userEnteredFormat.textFormat.bold",
         }
     })
 
-    # Currency on summary B (Python rows 6-10 = money rows)
+    # Currency on summary col B (rows 4-7, the dollar rows)
     requests.append({
         "repeatCell": {
             "range": {"sheetId": SID_DASHBOARD,
-                      "startRowIndex": 6, "endRowIndex": 11,
+                      "startRowIndex": 3, "endRowIndex": 7,
                       "startColumnIndex": 1, "endColumnIndex": 2},
             "cell": {"userEnteredFormat": currency_fmt()},
             "fields": "userEnteredFormat.numberFormat",
         }
     })
 
-    # Payout table headers bold (Python rows 12 and 19)
-    for row_idx in [12, 19]:
-        requests.append({
-            "repeatCell": {
-                "range": {"sheetId": SID_DASHBOARD,
-                          "startRowIndex": row_idx, "endRowIndex": row_idx + 1},
-                "cell": {"userEnteredFormat": bold_fmt()},
-                "fields": "userEnteredFormat.textFormat.bold",
-            }
-        })
-
-    # Currency on payout amount col D (Python fish rows 13-17, whale rows 20-24)
-    for start, end in [(13, 18), (20, 25)]:
-        requests.append({
-            "repeatCell": {
-                "range": {"sheetId": SID_DASHBOARD,
-                          "startRowIndex": start, "endRowIndex": end,
-                          "startColumnIndex": 3, "endColumnIndex": 4},
-                "cell": {"userEnteredFormat": currency_fmt()},
-                "fields": "userEnteredFormat.numberFormat",
-            }
-        })
-
-    # Currency on chart helper F-G (Python rows 13-17)
+    # "PER-POT BREAKDOWN" header bold (row 9 / index 8)
     requests.append({
         "repeatCell": {
             "range": {"sheetId": SID_DASHBOARD,
-                      "startRowIndex": 13, "endRowIndex": 18,
-                      "startColumnIndex": 5, "endColumnIndex": 7},
+                      "startRowIndex": 8, "endRowIndex": 9,
+                      "startColumnIndex": 0, "endColumnIndex": 1},
+            "cell": {"userEnteredFormat": {"textFormat": {"bold": True, "fontSize": 12}}},
+            "fields": "userEnteredFormat.textFormat",
+        }
+    })
+
+    # Per-pot sub-header (row 10 / index 9) bold + light bg
+    requests.append({
+        "repeatCell": {
+            "range": {"sheetId": SID_DASHBOARD,
+                      "startRowIndex": DASH_TIER_HEADER_ROW - 1,
+                      "endRowIndex": DASH_TIER_HEADER_ROW,
+                      "startColumnIndex": 0, "endColumnIndex": 8},
+            "cell": {"userEnteredFormat": {
+                "backgroundColor": SETTINGS_BG,
+                "textFormat": {"bold": True},
+            }},
+            "fields": "userEnteredFormat.backgroundColor,userEnteredFormat.textFormat",
+        }
+    })
+
+    # Currency on per-pot data rows, cols C-H (rows 11-16)
+    requests.append({
+        "repeatCell": {
+            "range": {"sheetId": SID_DASHBOARD,
+                      "startRowIndex": DASH_TIER_FIRST_ROW - 1,
+                      "endRowIndex": DASH_TIER_LAST_ROW,
+                      "startColumnIndex": 2, "endColumnIndex": 8},
             "cell": {"userEnteredFormat": currency_fmt()},
             "fields": "userEnteredFormat.numberFormat",
         }
@@ -701,23 +712,18 @@ def make_format_requests():
         }
     })
 
-    # --- Blinds Timer formatting ---
+    # --- Blinds Timer (same formatting as variant 2) ---
     col_widths = [(0, 200), (1, 120), (2, 120), (3, 80), (4, 140), (5, 180)]
     for col_idx, width in col_widths:
         requests.append({
             "updateDimensionProperties": {
-                "range": {
-                    "sheetId": SID_BLINDS,
-                    "dimension": "COLUMNS",
-                    "startIndex": col_idx,
-                    "endIndex": col_idx + 1,
-                },
+                "range": {"sheetId": SID_BLINDS, "dimension": "COLUMNS",
+                          "startIndex": col_idx, "endIndex": col_idx + 1},
                 "properties": {"pixelSize": width},
                 "fields": "pixelSize",
             }
         })
 
-    # 14pt minimum across timer tab
     requests.append({
         "repeatCell": {
             "range": {"sheetId": SID_BLINDS, "startRowIndex": 0, "endRowIndex": 22},
@@ -726,7 +732,7 @@ def make_format_requests():
         }
     })
 
-    # Title (row 0): bold 18pt
+    # Title bold 18pt
     requests.append({
         "repeatCell": {
             "range": {"sheetId": SID_BLINDS, "startRowIndex": 0, "endRowIndex": 1,
@@ -736,7 +742,7 @@ def make_format_requests():
         }
     })
 
-    # Settings rows (1-2): bold + light bg
+    # Settings rows
     requests.append({
         "repeatCell": {
             "range": {"sheetId": SID_BLINDS, "startRowIndex": 1, "endRowIndex": 3,
@@ -749,7 +755,7 @@ def make_format_requests():
         }
     })
 
-    # Note row (3): italic
+    # Note row italic
     requests.append({
         "repeatCell": {
             "range": {"sheetId": SID_BLINDS, "startRowIndex": 3, "endRowIndex": 4,
@@ -759,7 +765,7 @@ def make_format_requests():
         }
     })
 
-    # Header (row 5): dark bg, white bold, centered
+    # Header row
     requests.append({
         "repeatCell": {
             "range": {"sheetId": SID_BLINDS, "startRowIndex": 5, "endRowIndex": 6,
@@ -770,12 +776,12 @@ def make_format_requests():
                 "horizontalAlignment": "CENTER",
             }},
             "fields": ("userEnteredFormat.backgroundColor,"
-                       "userEnteredFormat.textFormat,"
-                       "userEnteredFormat.horizontalAlignment"),
+                      "userEnteredFormat.textFormat,"
+                      "userEnteredFormat.horizontalAlignment"),
         }
     })
 
-    # Data rows: alternating shading + break highlights
+    # Data rows: alternating + breaks
     break_indices = [4, 9]
     data_start = 6
     for i in range(15):
@@ -813,7 +819,6 @@ def make_format_requests():
                 }
             })
 
-    # Left-align level column for data rows
     requests.append({
         "repeatCell": {
             "range": {"sheetId": SID_BLINDS,
@@ -824,7 +829,6 @@ def make_format_requests():
         }
     })
 
-    # Number format for SB/BB columns
     requests.append({
         "repeatCell": {
             "range": {"sheetId": SID_BLINDS,
@@ -835,7 +839,6 @@ def make_format_requests():
         }
     })
 
-    # Freeze first 6 rows of timer tab
     requests.append({
         "updateSheetProperties": {
             "properties": {
@@ -850,11 +853,35 @@ def make_format_requests():
 
 
 def make_chart_request():
-    """Chart on Live Payouts comparing Fish vs Whale payouts by place.
+    """Chart on Live Payouts: column chart with tier names on X-axis and
+    1st-5th place dollar amounts as 5 series. Blank tiers render as empty bars."""
+    series = []
+    chart_colors = [
+        {"red": 0.95, "green": 0.20, "blue": 0.20},  # red (1st)
+        {"red": 0.20, "green": 0.55, "blue": 0.95},  # blue (2nd)
+        {"red": 0.20, "green": 0.75, "blue": 0.30},  # green (3rd)
+        {"red": 0.95, "green": 0.65, "blue": 0.15},  # orange (4th)
+        {"red": 0.60, "green": 0.30, "blue": 0.75},  # purple (5th)
+    ]
+    # Place columns D-H (0-indexed 3-7); header row 10 (0-indexed 9) for legend.
+    for place_idx, color in enumerate(chart_colors):
+        col = 3 + place_idx
+        series.append({
+            "series": {
+                "sourceRange": {
+                    "sources": [{
+                        "sheetId": SID_DASHBOARD,
+                        "startRowIndex": DASH_TIER_HEADER_ROW - 1,
+                        "endRowIndex": DASH_TIER_LAST_ROW,
+                        "startColumnIndex": col,
+                        "endColumnIndex": col + 1,
+                    }]
+                }
+            },
+            "color": color,
+            "colorStyle": {"rgbColor": color},
+        })
 
-    Pulls from Dashboard chart-helper cols E-G across Python rows 12-17
-    (sheet rows 13-18 — header + 5 places).
-    """
     return {
         "addChart": {
             "chart": {
@@ -866,7 +893,7 @@ def make_chart_request():
                     }
                 },
                 "spec": {
-                    "title": "🏆 Tonight's Prize Pools — Fish vs Whales (Separate)",
+                    "title": "🏆 Tonight's Prize Pools — Per-Pot Payouts",
                     "basicChart": {
                         "chartType": "COLUMN",
                         "legendPosition": "BOTTOM_LEGEND",
@@ -876,46 +903,15 @@ def make_chart_request():
                                 "sourceRange": {
                                     "sources": [{
                                         "sheetId": SID_DASHBOARD,
-                                        "startRowIndex": 12,
-                                        "endRowIndex": 18,
-                                        "startColumnIndex": 4,
-                                        "endColumnIndex": 5,
+                                        "startRowIndex": DASH_TIER_HEADER_ROW - 1,
+                                        "endRowIndex": DASH_TIER_LAST_ROW,
+                                        "startColumnIndex": 0,
+                                        "endColumnIndex": 1,
                                     }]
                                 }
                             }
                         }],
-                        "series": [
-                            {
-                                "series": {
-                                    "sourceRange": {
-                                        "sources": [{
-                                            "sheetId": SID_DASHBOARD,
-                                            "startRowIndex": 12,
-                                            "endRowIndex": 18,
-                                            "startColumnIndex": 5,
-                                            "endColumnIndex": 6,
-                                        }]
-                                    }
-                                },
-                                "color": CHART_BLUE,
-                                "colorStyle": {"rgbColor": CHART_BLUE},
-                            },
-                            {
-                                "series": {
-                                    "sourceRange": {
-                                        "sources": [{
-                                            "sheetId": SID_DASHBOARD,
-                                            "startRowIndex": 12,
-                                            "endRowIndex": 18,
-                                            "startColumnIndex": 6,
-                                            "endColumnIndex": 7,
-                                        }]
-                                    }
-                                },
-                                "color": CHART_GOLD,
-                                "colorStyle": {"rgbColor": CHART_GOLD},
-                            },
-                        ],
+                        "series": series,
                     },
                 },
             }
@@ -954,19 +950,19 @@ def populate_data(sheets_service, spreadsheet_id):
 
     reg_headers = build_registration_headers()
     data.append({
-        "range": "Registration!A1:I1",
+        "range": "Registration!A1:H1",
         "values": reg_headers,
     })
 
     reg_formulas_data = build_registration_formulas()
     data.append({
-        "range": f"Registration!A2:I{LAST_PLAYER_ROW}",
+        "range": f"Registration!A2:H{LAST_PLAYER_ROW}",
         "values": reg_formulas_data,
     })
 
     dash_rows = build_dashboard_data()
     data.append({
-        "range": f"Dashboard!A1:{col_letter(6)}{len(dash_rows)}",
+        "range": f"Dashboard!A1:{col_letter(7)}{len(dash_rows)}",
         "values": dash_rows,
     })
 
@@ -1007,7 +1003,7 @@ def share_sheet(drive_service, spreadsheet_id):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Create the Poker Tournament Manager — Separate Prize Pools Edition."
+        description="Create the Poker Tournament Manager — Multi-Tier Edition."
     )
     parser.add_argument(
         "--credentials", "-c",
@@ -1047,7 +1043,7 @@ def main():
 
     url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit"
     print()
-    print("Done! Your Separate Prize Pools sheet is ready.")
+    print("Done! Your Multi-Tier sheet is ready.")
     print(f"SHEET_URL={url}")
 
 

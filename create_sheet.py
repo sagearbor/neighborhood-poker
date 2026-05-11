@@ -18,10 +18,13 @@ The script prints the new sheet URL when finished.
 """
 
 import argparse
+import json
 import os
 
-from google.oauth2.service_account import Credentials
+from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+
+from apps_script_installer import try_install_timer
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -30,12 +33,13 @@ from googleapiclient.discovery import build
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/script.projects",
 ]
 
 SHEET_TITLE = "Poker Tournament Manager — Pro-Am Edition"
 
-# Default path to service-account credentials JSON
-DEFAULT_CREDENTIALS = "arborfam-hub-token.json"
+# Default OAuth token path (matches the other create_sheet*.py scripts)
+DEFAULT_CREDENTIALS = "/Users/sophie.arborbot/.openclaw/workspace/arborfam-hub-token.json"
 
 # Number of player rows in Registration (2..31 → 30 players)
 PLAYER_ROWS = 30
@@ -65,11 +69,20 @@ CHART_GOLD = {"red": 0.98, "green": 0.74, "blue": 0.18}
 # ---------------------------------------------------------------------------
 
 def authorize(credentials_path: str):
-    """Return an authorized Sheets + Drive service pair."""
-    creds = Credentials.from_service_account_file(credentials_path, scopes=SCOPES)
+    """Load a user OAuth token JSON. Returns (creds, sheets, drive)."""
+    with open(credentials_path) as f:
+        token_data = json.load(f)
+    creds = Credentials(
+        token=token_data["token"],
+        refresh_token=token_data["refresh_token"],
+        token_uri=token_data["token_uri"],
+        client_id=token_data["client_id"],
+        client_secret=token_data["client_secret"],
+        scopes=token_data.get("scopes", SCOPES),
+    )
     sheets = build("sheets", "v4", credentials=creds)
     drive = build("drive", "v3", credentials=creds)
-    return sheets, drive
+    return creds, sheets, drive
 
 
 def col_letter(index: int) -> str:
@@ -342,20 +355,49 @@ def build_instructions_data():
 
 
 def build_blinds_data():
-    """Return placeholder rows for the Blinds Timer tab."""
-    return [
-        ["⏱ BLINDS TIMER"],
-        [],
-        ["Coming soon! This tab will contain a blind structure and timer."],
-        [],
-        ["Suggested blind levels:"],
-        ["Level 1: 25/50  (20 min)"],
-        ["Level 2: 50/100  (20 min)"],
-        ["Level 3: 100/200  (20 min)"],
-        ["Level 4: 200/400  (15 min)"],
-        ["Level 5: 300/600  (15 min)"],
-        ["Level 6: 500/1000  (15 min)"],
+    """Full blinds schedule (apps-script timer reads from sheet row 7 onward,
+    columns A-E; row 6 is the header; rows 1-4 are display settings)."""
+    rows = []
+
+    rows.append(["⏱ BLINDS TIMER", "", "", "", "", ""])
+    rows.append(["Starting Stack:", "10,000", "", "Ante starts at level:", 5, ""])
+    rows.append(["Level duration default:", "20 min", "", "", "", ""])
+    rows.append(["💡 Highlight the current row manually as you progress",
+                 "", "", "", "", ""])
+    rows.append([])
+    rows.append(["Level", "Small Blind", "Big Blind", "Ante",
+                 "Duration (min)", "Total Time Elapsed"])
+
+    schedule = [
+        ("1", 25, 50, 20, False, ""),
+        ("2", 50, 100, 20, False, ""),
+        ("3", 75, 150, 20, False, ""),
+        ("4", 100, 200, 20, False, ""),
+        ("BREAK", None, None, 10, True, "BREAK — Top-off allowed"),
+        ("5", 150, 300, 20, False, ""),
+        ("6", 200, 400, 20, False, ""),
+        ("7", 300, 600, 20, False, ""),
+        ("8", 400, 800, 20, False, ""),
+        ("BREAK", None, None, 10, True, "BREAK"),
+        ("9", 500, 1000, 15, False, ""),
+        ("10", 750, 1500, 15, False, ""),
+        ("11", 1000, 2000, 15, False, ""),
+        ("12", 1500, 3000, 15, False, ""),
+        ("13", 2000, 4000, 15, False, ""),
     ]
+
+    data_start_row = 7
+    for i, (level, sb, bb, duration, is_break, note) in enumerate(schedule):
+        row_1idx = data_start_row + i
+        elapsed = f"=E{row_1idx}" if i == 0 else f"=F{row_1idx - 1}+E{row_1idx}"
+        if is_break:
+            rows.append([note, "", "", "", duration, elapsed])
+        else:
+            level_num = int(level)
+            ante_formula = f'=IF({level_num}>=$E$2,"Yes","")'
+            rows.append([f"Level {level}", sb, bb, ante_formula, duration, elapsed])
+
+    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -771,7 +813,7 @@ def populate_data(sheets_service, spreadsheet_id):
     # Blinds Timer
     blinds_rows = build_blinds_data()
     data.append({
-        "range": f"'⏱ Blinds Timer'!A1:A{len(blinds_rows)}",
+        "range": f"'⏱ Blinds Timer'!A1:F{len(blinds_rows)}",
         "values": blinds_rows,
     })
 
@@ -807,18 +849,22 @@ def main():
     parser.add_argument(
         "--credentials", "-c",
         default=DEFAULT_CREDENTIALS,
-        help=f"Path to service-account credentials JSON (default: {DEFAULT_CREDENTIALS})",
+        help=f"Path to OAuth token JSON (default: {DEFAULT_CREDENTIALS})",
+    )
+    parser.add_argument(
+        "--no-timer-install",
+        action="store_true",
+        help="Skip Apps Script auto-install (fall back to manual setup).",
     )
     args = parser.parse_args()
 
     creds_path = os.path.expanduser(args.credentials)
     if not os.path.exists(creds_path):
         print(f"Error: credentials file not found at {creds_path}")
-        print(f"Place your Google service-account JSON at '{DEFAULT_CREDENTIALS}' or use --credentials")
         raise SystemExit(1)
 
     print("Authorizing with Google APIs...")
-    sheets_service, drive_service = authorize(creds_path)
+    creds, sheets_service, drive_service = authorize(creds_path)
 
     print("Creating spreadsheet...")
     spreadsheet_id = create_spreadsheet(sheets_service)
@@ -831,6 +877,10 @@ def main():
 
     print("Setting sharing permissions...")
     share_sheet(drive_service, spreadsheet_id)
+
+    if not args.no_timer_install:
+        print("Installing Apps Script blinds timer...")
+        try_install_timer(creds, spreadsheet_id)
 
     url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit"
     print()
