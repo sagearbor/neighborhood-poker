@@ -160,20 +160,24 @@ def build_settings_data():
     # Row 1
     rows.append(["⚙️ SETTINGS"])
 
-    # Row 2: pot table header
-    rows.append(["Pot Name", "Buy-in ($)", "Note"])
+    # Row 2: pot table header. Col D is a helper "active filter" — populated
+    # only when Buy-in is set, so the Registration dropdown skips inactive rows.
+    rows.append(["Pot Name", "Buy-in ($)", "Note", "✓ Active"])
 
-    # Rows 3-8: 6 pot rows. Default-fill 4, leave 2 blank.
+    # Rows 3-8: 6 pot rows. 4 default-active + 2 stocked-but-inactive.
+    # User can blank Buy-in to deactivate, or fill Buy-in to activate.
     default_pots = [
         ("🦐 Shrimp", 1, "Casual / learning"),
         ("🐟 Fish", 10, "Low-stakes fun"),
         ("🐠 Tuna", 40, "Mid-stakes"),
         ("🐋 Whale", 140, "High-stakes"),
-        ("", "", ""),
-        ("", "", ""),
+        ("🦀 Crab", "", "Optional — fill Buy-in to activate (~$5 suggested)"),
+        ("🐬 Dolphin", "", "Optional — fill Buy-in to activate (~$75 suggested)"),
     ]
-    for name, buyin, note in default_pots:
-        rows.append([name, buyin, note])
+    for i, (name, buyin, note) in enumerate(default_pots):
+        sheet_row = POT_FIRST_ROW + i  # 3..8
+        active_formula = f'=IF(B{sheet_row}>0,A{sheet_row},"")'
+        rows.append([name, buyin, note, active_formula])
 
     # Row 9: blank
     rows.append([])
@@ -313,21 +317,23 @@ def build_dashboard_data():
     rows.append(["Pot Name", "Players", "Pot Total",
                  "1st", "2nd", "3rd", "4th", "5th"])
 
-    # 6 tier rows (sheet rows 11-16 = Python indices 10-15)
+    # 6 tier rows (sheet rows 11-16 = Python indices 10-15).
+    # Use the helper "active" col D as the gate: tiers with blank Buy-in
+    # render as fully blank Dashboard rows (no count, no pot, no payouts).
     for offset in range(POT_COUNT):
         settings_row = POT_FIRST_ROW + offset  # 3..8
         dash_row = DASH_TIER_FIRST_ROW + offset  # 11..16
 
-        pot_name_cell = f"Settings!$A${settings_row}"
+        active_cell = f"Settings!$D${settings_row}"  # helper: name if active, else ""
 
-        name_formula = f"={pot_name_cell}"
+        name_formula = f"={active_cell}"
         count_formula = (
-            f"=IF({pot_name_cell}=\"\",\"\","
-            f"COUNTIF(Registration!$B$2:$B${lr},{pot_name_cell}))"
+            f"=IF({active_cell}=\"\",\"\","
+            f"COUNTIF(Registration!$B$2:$B${lr},{active_cell}))"
         )
         total_formula = (
-            f"=IF({pot_name_cell}=\"\",\"\","
-            f"SUMIF(Registration!$B$2:$B${lr},{pot_name_cell},"
+            f"=IF({active_cell}=\"\",\"\","
+            f"SUMIF(Registration!$B$2:$B${lr},{active_cell},"
             f"Registration!$G$2:$G${lr})*(1-Settings!$B$13/100))"
         )
 
@@ -547,7 +553,8 @@ def make_format_requests():
         }
     })
 
-    # Pot dropdown sourced from Settings!A3:A8 — auto-updates with pot table
+    # Pot dropdown sourced from Settings col D (helper "active" column).
+    # Tiers with blank Buy-in show "" in col D and are skipped from the dropdown.
     requests.append({
         "setDataValidation": {
             "range": {"sheetId": SID_REGISTRATION,
@@ -558,7 +565,7 @@ def make_format_requests():
                     "type": "ONE_OF_RANGE",
                     "values": [{
                         "userEnteredValue":
-                            f"=Settings!$A${POT_FIRST_ROW}:$A${POT_LAST_ROW}"
+                            f"=Settings!$D${POT_FIRST_ROW}:$D${POT_LAST_ROW}"
                     }],
                 },
                 "showCustomUi": True,
