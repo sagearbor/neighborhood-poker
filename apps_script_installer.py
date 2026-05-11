@@ -80,11 +80,18 @@ def try_install_timer(creds, spreadsheet_id: str) -> bool:
         url = install_timer(creds, spreadsheet_id)
     except Exception as e:
         msg = str(e)
-        print(f"⚠ Couldn't auto-install Apps Script: {msg[:300]}")
-        if "script.projects" in msg or "insufficient" in msg.lower():
+        print(f"⚠ Couldn't auto-install Apps Script: {msg[:500]}")
+        msg_lower = msg.lower()
+        # Google has two separate Apps Script API toggles — Cloud project AND
+        # per-user. The error message URL distinguishes them.
+        if "script.google.com/home/usersettings" in msg or "user has not enabled" in msg_lower:
+            print("  → Enable the PER-USER Apps Script API toggle:")
+            print("    https://script.google.com/home/usersettings")
+            print("    (Separate from the Cloud Console toggle. Wait ~30s after enabling.)")
+        elif "script.projects" in msg or "insufficient" in msg_lower:
             print("  → Run `python3 setup_auth.py` to add the required scope, then re-run.")
-        elif "API has not been used" in msg or "disabled" in msg.lower() or "SERVICE_DISABLED" in msg:
-            print("  → Enable the Apps Script API:")
+        elif "API has not been used" in msg or "service_disabled" in msg_lower:
+            print("  → Enable the Apps Script API in your Google Cloud project:")
             print("    https://console.cloud.google.com/apis/library/script.googleapis.com")
         print("  Falling back to manual install — see BLINDS_TIMER_SETUP.md.")
         return False
